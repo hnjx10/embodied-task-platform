@@ -1,0 +1,123 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "embodied-task-platform"
+version = "1.4.1"
+description = "具身任务规划与执行验证平台：LLM task planning + standardized skills + policy-based safety gate for ROS2 / Gazebo robots, with hash-chained audit and an HTTP control plane."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Jiang Hua" }]
+keywords = ["robotics", "ros2", "langgraph", "llm", "embodied-ai", "orchestration"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = [
+    "pydantic>=2.6,<3",
+    "pydantic-settings>=2.2,<3",
+    "structlog>=24.1",
+    "tenacity>=8.2",
+    "langgraph>=0.2.50",
+    "typer>=0.12",  # CLI 主入口，缺了连 robot-agent 都起不来
+    # 默认运行模式（CLI 跑任务、读 YAML 配置）就要用到，不放 extra：
+    # 做成可选等于「装上了但一跑就 ImportError」。
+    "aiosqlite>=0.20",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+# LLM 规划能力（OpenAI 兼容接口，可对接 Qwen / DeepSeek / vLLM）
+llm = ["openai>=1.30"]
+# HTTP 控制面 + 指标：只有 `robot-agent serve` 需要
+api = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+    "prometheus-client>=0.20",  # 未装也能起服务，只是 /metrics 为空
+]
+# ROS2 执行器：rclpy 只能由 ROS2 发行版提供，无法通过 pip 安装
+ros = []
+# 多实例部署时的设备级分布式锁（SETNX + PX，释放走 Lua 比对 token）
+redis = ["redis>=5.0"]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "pytest-cov>=5.0",
+    "httpx>=0.27",
+    "ruff>=0.6",
+    "mypy>=1.10",
+    "pre-commit>=3.7",
+    # 锁相关测试：fakeredis 跑真实 Redis 命令语义，[lua] 提供 eval 支持
+    "fakeredis[lua]>=2.20",
+    "redis>=5.0",
+]
+
+[project.scripts]
+robot-agent = "robot_agent.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/hnjx10/robot-agent"
+Issues = "https://github.com/hnjx10/robot-agent/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "B", "C4", "SIM", "RUF", "ASYNC", "S", "T20"]
+ignore = [
+    "S101",   # assert 在测试与内部不变量检查中是合理的
+    "RUF001", # 中文标点
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106"]
+"src/robot_agent/skills/ros2.py" = ["N999"]
+# ROS2 辅助脚本面向终端用户，用 print 输出人类可读提示（依赖未装上时连 rclpy 日志都没有）
+"ros2_ws/**" = ["T201"]
+# 基准脚本本身就是终端工具：它唯一的输出方式就是 print
+"benchmarks/**" = ["T201"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_unused_configs = true
+warn_redundant_casts = true
+no_implicit_optional = true
+check_untyped_defs = true
+ignore_missing_imports = true
+exclude = "src/robot_agent/skills/ros2\\.py"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+addopts = "-ra --strict-markers"
+markers = [
+    "integration: 需要装配多个组件（图 / HTTP / 存储）",
+    "ros: 需要真实 ROS2 环境，CI 默认跳过",
+]
+
+[tool.coverage.run]
+source = ["src/robot_agent"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
