@@ -1,0 +1,81 @@
+# 默认配置：本地开发与 mock 模式。
+# 优先级：构造参数 > 环境变量(ROBOT_AGENT_*) > .env > 本文件 > 代码默认值。
+# 嵌套字段的环境变量写法：ROBOT_AGENT_SAFETY__MAX_LINEAR_SPEED=0.18
+
+env: dev
+service_name: robot-agent
+log_level: INFO
+log_json: true
+
+arena:
+  half_size: 1.5
+  cube_size: 0.1
+  cube_layout:
+    red: [0.8, 0.5]
+    green: [0.9, -0.4]
+    blue: [-0.7, 0.6]
+
+safety:
+  max_linear_speed: 0.22
+  min_linear_speed: 0.02
+  default_speed: 0.15
+  max_steps: 8
+  clamp_overspeed: true
+  # 禁用某些技能的应急开关；为空表示放行注册表内全部技能
+  allowed_skills: []
+  # 需要人工确认后才执行的高风险技能
+  require_approval_for: []
+  # 指令级红线词
+  blocked_keywords:
+    - 冲向
+    - 撞
+    - 全速冲
+    - destroy
+  # 圆形禁区：充电桩
+  geofences:
+    - name: charging_dock
+      x: 1.3
+      y: 1.3
+      radius: 0.4
+
+llm:
+  enabled: true
+  # api_key 请用环境变量注入，不要写进文件
+  api_key: null
+  base_url: null
+  model: qwen-plus
+  temperature: 0.0
+  timeout_s: 20.0
+  max_attempts: 3
+  max_output_tokens: 1024
+  fallback_to_rules: true
+
+executor:
+  backend: mock
+  step_timeout_s: 90.0
+  max_attempts: 2
+  retry_backoff_s: 0.3
+  ros_domain_id: null
+
+audit:
+  enabled: true
+  path: var/audit/audit.jsonl
+  rotate_bytes: 33554432
+  fsync: false
+  hash_chain: true
+
+storage:
+  url: memory
+  retention_hours: 72
+  purge_interval_s: 1800    # 过期清理周期；配了保留期就会真的执行
+
+api:
+  max_request_bytes: 65536   # 超限 413；不信 Content-Length，chunked 也会被计数
+  max_sse_subscribers: 32    # 单任务 SSE 订阅上限，超限 429
+  host: 127.0.0.1
+  port: 8080
+  auth_token: null
+  cors_origins: []
+  max_concurrent_tasks: 4
+  max_queue_size: 64
+  request_timeout_s: 180.0
