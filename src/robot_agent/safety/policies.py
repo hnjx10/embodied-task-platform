@@ -1,0 +1,367 @@
+"""安全策略集合。
+
+每个策略是一个独立可测的小函数：输入「步骤 + 上下文」，输出「放行 / 修正 / 拒绝」。
+新增约束（例：禁止夜间作业、限制单次位移距离）只需加一个类并在
+:class:`~robot_agent.safety.gate.SafetyGate` 的默认链路里注册，主流程零改动。
+
+策略的返回语义：
+
+* ``allowed=True``  —— 放行，``fixed_args`` 可携带修正后的参数（自动降速）
+* ``allowed=False`` —— 拒绝，``reason`` 会原样写进审计与用户可见的错误信息
+* ``requires_approval=True`` —— 动作本身合法，但必须人工确认后才执行
+"""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass, field
+from typing import Any, Protocol
+
+from pydantic import ValidationError
+
+from robot_agent.config import ArenaSettings, SafetySettings
+from robot_agent.domain.plan import PlanStep
+from robot_agent.skills.base import SkillRegistry
+
+
+@dataclass(frozen=True)
+class PolicyContext:
+    """策略求值所需的只读上下文。"""
+
+    instruction: str
+    safety: SafetySettings
+    arena: ArenaSettings
+    registry: SkillRegistry
+    task_id: str = ""
+
+
+@dataclass
+class PolicyDecision:
+    """策略结论。"""
+
+    allowed: bool = True
+    policy: str = ""
+    reason: str = ""
+    fixed_args: dict[str, Any] | None = None
+    requires_approval: bool = False
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def deny(cls, policy: str, reason: str, **metadata: Any) -> PolicyDecision:
+        return cls(allowed=False, policy=policy, reason=reason, metadata=metadata)
+
+    @classmethod
+    def pass_(
+        cls, policy: str, fixed_args: dict[str, Any] | None = None, **metadata: Any
+    ) -> PolicyDecision:
+        return cls(allowed=True, policy=policy, fixed_args=fixed_args, metadata=metadata)
+
+
+class Policy(Protocol):
+    """策略协议。"""
+
+    name: str
+
+    def evaluate(self, step: PlanStep, ctx: PolicyContext) -> PolicyDecision: ...
+
+
+# --------------------------------------------------------------------- 策略
+
+
+class SkillAllowlistPolicy:
+    """技能必须存在且在白名单内。防止 LLM 幻觉出未注册/被禁用的能力。"""
+
+    name = "skill_allowlist"
+
+    def evaluate(self, step: PlanStep, ctx: PolicyContext) -> PolicyDecision:
+        if not ctx.registry.has(step.skill):
+            return PolicyDecision.deny(
+                self.name,
+                f"技能 '{step.skill}' 不存在，可用技能: {ctx.registry.names()}",
+                skill=step.skill,
+            )
+        allowed = ctx.safety.allowed_skills
+        if allowed and step.skill not in allowed:
+            return PolicyDecision.deny(
+                self.name, f"技能 '{step.skill}' 不在允许列表中", skill=step.skill
+            )
+        return PolicyDecision.pass_(self.name)
+
+
+class BlockedKeywordPolicy:
+    """指令级关键词黑名单。命中即拒绝整条指令，属于「人话层面的红线」。"""
+
+    name = "blocked_keyword"
+
+    def evaluate(self, step: PlanStep, ctx: PolicyContext) -> PolicyDecision:
+        hits = [w for w in ctx.safety.blocked_keywords if w and w in ctx.instruction]
+        if hits:
+            return PolicyDecision.deny(
+                self.name,
+                f"指令包含高风险表述 {hits}，拒绝执行",
+                keywords=hits,
+            )
+        return PolicyDecision.pass_(self.name)
+
+
+class ParamSchemaPolicy:
+    """技能参数必须能通过该技能自己的 pydantic 校验。
+
+    参数校验原本只发生在 :meth:`Skill.execute` 里，但那时请求已经进入执行队列，
+    错误只能以「执行失败」的形式暴露。前移到闸门有两个直接收益：
+
+    * 非法计划根本不会变成任务记录，更不会触发任何硬件动作；
+    * LLM 幻觉出的多余/缺失参数在审计里留下的是「安全拒绝」，而不是「执行异常」——
+      前者意味着防线拦住了，后者意味着防线漏到了末端。
+
+    技能不存在时直接放行，把更准确的原因留给 :class:`SkillAllowlistPolicy`。
+    """
+
+    name = "param_schema"
+
+    def evaluate(self, step: PlanStep, ctx: PolicyContext) -> PolicyDecision:
+        if not ctx.registry.has(step.skill):
+            return PolicyDecision.pass_(self.name)
+        model = ctx.registry.get(step.skill).params_model
+        try:
+            model.model_validate(step.args)
+        except ValidationError as exc:
+            return PolicyDecision.deny(
+                self.name,
+                f"技能 '{step.skill}' 参数不合法: {_schema_errors(exc)}",
+                skill=step.skill,
+                args=step.args,
+            )
+        return PolicyDecision.pass_(self.name)
+
+
+class ArenaBoundsPolicy:
+    """目标点必须落在场地内。
+
+    一个步骤可能携带**多个**点：``patrol`` 把目标点藏在 ``waypoints`` 列表里，
+    只看 ``x``/``y`` 会漏掉整条巡逻路线——那种漏洞在演示里永远发现不了，
+    只会在真机撞墙时暴露。所以这里按 :func:`_candidate_points` 逐点判定。
+
+    对 ``move_relative`` 这类「位移而非目标点」的技能，闸门拿不到当前位姿，
+    无法算出落点。此时退一步守住一条与位姿无关的硬约束：**位移长度不得超过
+    场地对角线**——起点无论在哪，跨过整条对角线的位移都必然出界。
+    这条判定零误拦（不存在起点使它能留在场内），代价是挡住一部分合法长位移，
+    需要精确判定时由编排层注入位姿，而不是让闸门去猜。
+    """
+
+    name = "arena_bounds"
+
+    def evaluate(self, step: PlanStep, ctx: PolicyContext) -> PolicyDecision:
+        delta = _extract_delta(step)
+        if delta is not None:
+            return self._check_delta(delta, ctx)
+
+        half = ctx.arena.half_size
+        for x, y in _candidate_points(step):
+            if not (-half <= x <= half and -half <= y <= half):
+                return PolicyDecision.deny(
+                    self.name,
+                    f"目标点 ({x:.2f}, {y:.2f}) 超出场地边界 ±{half}m",
+                    x=x,
+                    y=y,
+                )
+        return PolicyDecision.pass_(self.name)
+
+    def _check_delta(self, delta: tuple[float, float], ctx: PolicyContext) -> PolicyDecision:
+        dx, dy = delta
+        span = 2.0 * ctx.arena.half_size * math.sqrt(2.0)
+        distance = math.hypot(dx, dy)
+        if distance > span:
+            return PolicyDecision.deny(
+                self.name,
+                f"相对位移 {distance:.2f}m 超过场地对角线 {span:.2f}m，任何起点都会出界",
+                dx=dx,
+                dy=dy,
+            )
+        return PolicyDecision.pass_(self.name)
+
+
+class GeofencePolicy:
+    """目标点不得落在禁区内。同样逐点判定，``waypoints`` 里每个点都要过一遍。"""
+
+    name = "geofence"
+
+    def evaluate(self, step: PlanStep, ctx: PolicyContext) -> PolicyDecision:
+        for x, y in _candidate_points(step):
+            for fence in ctx.safety.geofences:
+                if fence.contains(x, y):
+                    return PolicyDecision.deny(
+                        self.name,
+                        f"目标点 ({x:.2f}, {y:.2f}) 位于禁区 '{fence.name}' 内",
+                        x=x,
+                        y=y,
+                        geofence=fence.name,
+                    )
+        return PolicyDecision.pass_(self.name)
+
+
+class SpeedLimitPolicy:
+    """线速度上限。默认自动降速而非直接拒绝——风险可控时保留任务可用性。"""
+
+    name = "speed_limit"
+
+    def evaluate(self, step: PlanStep, ctx: PolicyContext) -> PolicyDecision:
+        if "speed" not in step.args:
+            return PolicyDecision.pass_(self.name)
+        raw = step.args["speed"]
+        try:
+            speed = float(raw)
+        except (TypeError, ValueError):
+            return PolicyDecision.deny(self.name, f"速度参数非法: {raw!r}", speed=raw)
+
+        if speed <= 0:
+            return PolicyDecision.deny(self.name, f"速度必须为正数，收到 {speed}", speed=speed)
+
+        limit = ctx.safety.max_linear_speed
+        if speed > limit:
+            if ctx.safety.clamp_overspeed:
+                clamped = {**step.args, "speed": limit}
+                return PolicyDecision.pass_(
+                    self.name,
+                    fixed_args=clamped,
+                    clamped_from=speed,
+                    clamped_to=limit,
+                )
+            return PolicyDecision.deny(
+                self.name, f"请求速度 {speed:.2f} m/s 超过上限 {limit:.2f} m/s", speed=speed
+            )
+
+        if speed < ctx.safety.min_linear_speed:
+            # 过低速度会导致底盘死区不动作，抬到最小值而不是让任务静默卡住
+            return PolicyDecision.pass_(
+                self.name,
+                fixed_args={**step.args, "speed": ctx.safety.min_linear_speed},
+                clamped_from=speed,
+                clamped_to=ctx.safety.min_linear_speed,
+            )
+        return PolicyDecision.pass_(self.name)
+
+
+class StepDistancePolicy:
+    """单次位移不得超过配置上限（默认场地对角线，可按现场收紧）。"""
+
+    name = "step_distance"
+
+    def __init__(self, max_distance: float | None = None) -> None:
+        self._max = max_distance
+
+    def evaluate(self, step: PlanStep, ctx: PolicyContext) -> PolicyDecision:
+        coords = _extract_xy(step)
+        if coords is None or self._max is None:
+            return PolicyDecision.pass_(self.name)
+        dist = math.hypot(*coords)
+        if dist > self._max:
+            return PolicyDecision.deny(
+                self.name,
+                f"单步位移 {dist:.2f}m 超过上限 {self._max:.2f}m，请拆分为多步",
+                distance=round(dist, 3),
+            )
+        return PolicyDecision.pass_(self.name)
+
+
+class ApprovalPolicy:
+    """高风险技能/高风险动作需要人工确认。不是拒绝，而是挂起等待审批。"""
+
+    name = "approval"
+
+    def evaluate(self, step: PlanStep, ctx: PolicyContext) -> PolicyDecision:
+        must_approve = (
+            step.skill in ctx.safety.require_approval_for or _skill_risk(ctx, step.skill) == "high"
+        )
+        if not must_approve:
+            return PolicyDecision.pass_(self.name)
+        return PolicyDecision(
+            allowed=True,
+            policy=self.name,
+            reason=f"技能 '{step.skill}' 属于高风险动作，需要人工确认",
+            requires_approval=True,
+        )
+
+
+# ----------------------------------------------------------------- 辅助函数
+
+
+def _extract_xy(step: PlanStep) -> tuple[float, float] | None:
+    """从参数里取坐标；非坐标型技能返回 None（由其它策略负责）。"""
+    x, y = step.args.get("x"), step.args.get("y")
+    if x is None or y is None:
+        return None
+    try:
+        return float(x), float(y)
+    except (TypeError, ValueError):
+        return None
+
+
+def _candidate_points(step: PlanStep) -> list[tuple[float, float]]:
+    """步骤里所有需要过边界/禁区判定的点。
+
+    两个来源：步骤自身的 ``x``/``y``，以及 ``waypoints`` 这类点序列。
+    只认 ``x``/``y`` 会让 ``patrol`` 的目标点整条逃过校验——技能的参数形态
+    一旦嵌套，扁平取值就是漏检的同义词。
+    """
+    points: list[tuple[float, float]] = []
+    own = _extract_xy(step)
+    if own is not None:
+        points.append(own)
+
+    nested = step.args.get("waypoints")
+    if isinstance(nested, list):
+        for item in nested:
+            if not isinstance(item, dict):
+                continue
+            if item.get("x") is None or item.get("y") is None:
+                continue
+            try:
+                points.append((float(item["x"]), float(item["y"])))
+            except (TypeError, ValueError):
+                continue
+    return points
+
+
+def _extract_delta(step: PlanStep) -> tuple[float, float] | None:
+    """从参数里取相对位移；非位移型技能返回 None。
+
+    只认 ``dx``/``dy`` 同时出现的技能（目前是 ``move_relative``）：
+    缺一个字段说明参数本身就不完整，那是 :class:`ParamSchemaPolicy` 的职责，
+    这里补 0 反而会掩盖问题。
+    """
+    dx, dy = step.args.get("dx"), step.args.get("dy")
+    if dx is None or dy is None:
+        return None
+    try:
+        return float(dx), float(dy)
+    except (TypeError, ValueError):
+        return None
+
+
+def _skill_risk(ctx: PolicyContext, name: str) -> str:
+    if not ctx.registry.has(name):
+        return "high"
+    return ctx.registry.get(name).risk
+
+
+def _schema_errors(exc: ValidationError) -> str:
+    """把 pydantic 的校验错误压成一行，便于写进审计与用户可见的拒绝原因。"""
+    parts: list[str] = []
+    for err in exc.errors():
+        loc = ".".join(str(item) for item in err["loc"]) or "<root>"
+        parts.append(f"{loc} {err['msg']}")
+    return "; ".join(parts)
+
+
+def default_policies() -> list[Policy]:
+    """默认策略链。顺序有意义：先查技能合法性，再查物理约束，最后看是否需要审批。"""
+    return [
+        SkillAllowlistPolicy(),
+        BlockedKeywordPolicy(),
+        ParamSchemaPolicy(),
+        ArenaBoundsPolicy(),
+        GeofencePolicy(),
+        SpeedLimitPolicy(),
+        ApprovalPolicy(),
+    ]
