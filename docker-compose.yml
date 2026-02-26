@@ -1,0 +1,31 @@
+# 本地/单机部署示例：
+#   docker compose up -d
+#   curl -X POST localhost:8080/v1/tasks -H 'Content-Type: application/json' \
+#        -d '{"instruction":"把红色方块推到左边","wait":true}'
+services:
+  robot-agent:
+    build: .
+    image: robot-agent:1.4.0
+    container_name: robot-agent
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # 默认 mock 执行器，可在有 ROS2 的宿主机改为 ros2 + host 网络
+      ROBOT_AGENT_EXECUTOR__BACKEND: mock
+      ROBOT_AGENT_ENV: dev
+      ROBOT_AGENT_STORAGE__URL: sqlite:////var/lib/robot-agent/tasks.db
+      ROBOT_AGENT_AUDIT__PATH: /var/lib/robot-agent/audit/audit.jsonl
+      # 对外暴露时必须设置，否则 prod 校验会拒绝启动
+      # ROBOT_AGENT_API__AUTH_TOKEN: ${ROBOT_AGENT_API__AUTH_TOKEN:?required}
+      # ROBOT_AGENT_LLM__API_KEY: ${DASHSCOPE_API_KEY}
+    volumes:
+      - robot-agent-data:/var/lib/robot-agent
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8080/readyz', timeout=4).status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  robot-agent-data:
