@@ -1,0 +1,91 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: robot-agent
+  labels:
+    app.kubernetes.io/name: robot-agent
+spec:
+  # 关键：SQLite + 单机器人，只能单副本。
+  # 多副本需要换成 PostgreSQL 存储 + 按 robot_id 分区调度。
+  replicas: 1
+  strategy:
+    type: Recreate        # 避免滚动更新时两个 Pod 同时持有同一个 PVC
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: robot-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: robot-agent
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: robot-agent
+          image: ghcr.io/hnjx10/robot-agent:1.3.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - configMapRef:
+                name: robot-agent-config
+          env:
+            # 密钥从 Secret 注入，绝不写进 ConfigMap
+            - name: ROBOT_AGENT_API__AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: robot-agent-secrets
+                  key: api-auth-token
+            - name: ROBOT_AGENT_LLM__API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: robot-agent-secrets
+                  key: llm-api-key
+                  optional: true
+          # liveness 只证明进程活着；readiness 才判断能否接流量
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 20
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/robot-agent
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: robot-agent-data
+        - name: tmp
+          emptyDir: {}
+      # 给在飞任务留出收尾时间（应用内部等 10s）
+      terminationGracePeriodSeconds: 30
