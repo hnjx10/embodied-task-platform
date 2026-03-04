@@ -1,0 +1,15 @@
+# 需要 Prometheus Operator。没有的话直接在 prometheus.yml 里配 static_configs。
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: robot-agent
+  labels:
+    app.kubernetes.io/name: robot-agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: robot-agent
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
