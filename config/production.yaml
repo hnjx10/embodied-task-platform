@@ -1,0 +1,68 @@
+# 生产配置示例。用法：
+#   ROBOT_AGENT_CONFIG=config/production.yaml robot-agent serve
+# 注意：本文件只放「结构性配置」，所有密钥必须来自环境变量/密钥管理服务。
+
+env: prod
+service_name: robot-agent
+log_level: INFO
+log_json: true
+
+arena:
+  half_size: 1.5
+
+safety:
+  max_linear_speed: 0.22
+  min_linear_speed: 0.02
+  default_speed: 0.15
+  max_steps: 6
+  clamp_overspeed: true
+  # 生产环境收紧：推箱是物理接触动作，必须人工确认
+  require_approval_for:
+    - push_cube
+  geofences:
+    - name: charging_dock
+      x: 1.3
+      y: 1.3
+      radius: 0.4
+    - name: operator_aisle
+      x: 0.0
+      y: -1.4
+      radius: 0.3
+
+llm:
+  enabled: true
+  model: qwen-plus
+  timeout_s: 15.0
+  max_attempts: 2
+  max_output_tokens: 1024
+  fallback_to_rules: true
+
+executor:
+  backend: ros2
+  step_timeout_s: 90.0
+  max_attempts: 2
+  ros_domain_id: 42
+
+audit:
+  enabled: true
+  path: /var/lib/robot-agent/audit/audit.jsonl
+  rotate_bytes: 33554432
+  # 生产开启 fsync：审计记录是合规证据，断电也不能丢
+  fsync: true
+  hash_chain: true
+
+storage:
+  url: sqlite:////var/lib/robot-agent/tasks.db
+  retention_hours: 720
+  purge_interval_s: 600
+
+api:
+  max_request_bytes: 65536
+  max_sse_subscribers: 32
+  host: 0.0.0.0
+  port: 8080
+  max_concurrent_tasks: 1
+  max_queue_size: 32
+  request_timeout_s: 300.0
+  # auth_token 必须由 ROBOT_AGENT_API__AUTH_TOKEN 注入，否则 prod 校验会拒绝启动
+  cors_origins: []
