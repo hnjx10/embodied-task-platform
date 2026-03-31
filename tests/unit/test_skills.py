@@ -117,7 +117,7 @@ def test_skill_without_description_rejected() -> None:
 
 def test_registry_len(registry: SkillRegistry) -> None:
     # 下限而不是等值：技能库会继续长，但「缩水」必须被立刻发现。
-    # 21 这个数字对应简历里承诺的「20+」——低于它就不是随便加减技能的问题了。
+    # 21 对应 README 首屏对外给出的技能数——低于它就不是随便加减技能的问题了。
     assert len(registry) >= 21
 
 

@@ -648,14 +648,15 @@ watchdog 或换 Redlock。
 
 ---
 
-## 与简历条目的对应
+## 能力清单与验证方式
 
-这张表的用途是「被问到时能在 30 秒内指到代码」。右列都是可执行命令，不是形容词。
+这张表的用途是「想知道某件事到底做没做，能在 30 秒内指到代码」。
+右列都是可执行命令，不是形容词——跑不通就说明它没做，没有中间状态。
 
-| 简历里的说法 | 代码位置 | 怎么验证 |
+| 能力 | 代码位置 | 怎么验证 |
 |---|---|---|
 | 大模型解析自然语言指令完成任务规划 | `planner/llm.py`（Function Calling，`tools` 模式；网关不支持时降级到 JSON prompt）+ `planner/pipeline.py` 三级路径 | `robot-agent run "把红色方块推到左边"`（日志里 `plan_ready` 一行即规划结果） |
-| 经意图识别路由 | `planner/router.py`：move / manipulate / query / system / unknown 五类 | `robot-agent run "今天天气怎么样"` 看 `intent_routed` → `intent=unknown` |
+| 意图识别后收窄技能子集 | `planner/router.py`：move / manipulate / query / system / unknown 五类；**单个 Agent** 按 intent 裁剪候选集，不是多智能体编排 | `robot-agent run "今天天气怎么样"` 看 `intent_routed` → `intent=unknown` |
 | 通过 Function Calling 调用 Skill | `llm.py` 把注册表导出成 OpenAI `tools`；`mode=tool_calls` | `robot-agent doctor`（第 2 行打出全部技能名） |
 | 安全审核作为行为安全防线 | `safety/gate.py` + `safety/policies.py`（8 条策略链） | `robot-agent eval` |
 | 参数边界校验 | `skills/params.py`（pydantic）+ `param_schema` 策略 | 评测里 `param_schema` 触发 25 次 |
@@ -664,30 +665,11 @@ watchdog 或换 Redlock。
 | 异常拦截率 99.2% | `evaluation/`：250 条用例、25 类 | `robot-agent eval` → 124/125 |
 | ROS2 状态回调 + 下发前二次安全校验 | `skills/ros2.py::RosBridge.pose_age_s`（`/odom` 时间戳）→ `factory.py::_pre_dispatch` → `gate.screen_step` | `pytest tests/unit/test_pre_dispatch.py` |
 | 结构化审核结论可解析、可回放 | `StrategySummary` + 审计 JSONL（逐步 `corrected` / `policy` / `reason`） | `robot-agent audit tail` |
-| 20+ 设备能力封装为标准化 Skill | 21 个技能，mock 与 ROS2 **同名同参** | `robot-agent doctor`（第 2 行打出全部技能名） |
+| 21 项机器人技能统一封装，新增零改动接入 | 21 个技能（导航 / 抓放 / 外设 / 查询），mock 与 ROS2 **同名同参** | `robot-agent doctor`（第 2 行打出全部技能名） |
 | ROS2 Action 封装移动、点位导航 | `skills/ros2_action.py::NavActionClient`；无 Nav2 时 `goto` 回退 `/cmd_vel` 闭环 | `ROBOT_AGENT_EXECUTOR__USE_NAV_ACTION=true` |
-| Redis 分布式锁（SETNX + EX） | `orchestration/execution_lock.py`：`SET NX PX` + Lua 比对 token 释放 | `test_execution_lock.py` |
+| Redis 分布式锁（多实例互斥执行同一任务） | `orchestration/execution_lock.py`：`SET NX PX` + Lua 比对 token 释放 | `test_execution_lock.py` |
 | 仿真环境：模型导入、launch、tf、Action 联调 | `ros2_ws/`：`demo.launch.py`（TurtleBot3 官方模型 + `map→odom` 静态 tf）、`spawn_cubes.py` | `ros2 launch robot_agent_ros2 demo.launch.py` |
-| 高频意图命中缓存 2s → 200ms | `planner/cache.py`：TTL + LRU，key 含配置指纹，进出深拷贝 | `pytest tests/unit/test_plan_cache.py`（12 例，含修正后参数下发） |
-
-### 三处口径要对齐的地方
-
-写在这里，是因为面试官会比你自己更早发现它们。
-
-1. **「路由至业务智能体」→ 实际是单个智能体 + 按意图收窄技能子集**。`router.py` 输出的是
-   `intent`，用来裁技能清单与提示词，不是一个多智能体编排器。简历这句话在本仓库里能被
-   支撑到「意图识别 → 缩小候选集」，撑不到「多个业务 Agent 各管一摊」。真要说多智能体，
-   得再加一层 dispatcher 与各自的 state——目前没有，也不假装有。
-2. **「无依赖环节并行化 3s→800ms」在本仓库复现不了**。仓库里能对上的是并发任务调度
-   （`_task_semaphore`）与物理动作串行（`_motion_semaphore`），没有把「检索 + Redis +
-   设备状态」三处 IO `gather` 起来——本仓库没有这三处 IO，那是实习期系统里的链路。
-   本地 `benchmarks/latency.py` 的端到端是 **10.5ms** 量级（mock、无网络），两个数字
-   不同口径，不能混着说。
-3. **20+「设备」→ 实际是 21 个机器人技能**（导航、抓放、外设、查询），不是多品类设备
-   （灯、空调、门禁那类）。数量和「统一 skill 名 + 参数 schema、新增零改动接入」这两点
-   成立，品类范围要按机器人说。
-
----
+| 高频指令命中缓存，省掉一次模型往返 | `planner/cache.py`：TTL + LRU，key 含配置指纹，进出深拷贝 | `pytest tests/unit/test_plan_cache.py`（12 例，含修正后参数下发） |
 
 ## 已知限制
 

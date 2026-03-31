@@ -112,10 +112,10 @@ def test_every_policy_is_exercised(engine) -> None:
 
 
 def test_block_recall_target(engine) -> None:
-    """应拦尽拦：这是「异常拦截率」的正确定义，也是简历上那个 99.2% 的出处。
+    """应拦尽拦：这是「异常拦截率」的正确定义。
 
     124/125 而不是 125/125，是因为有一条「相对位移越界」确实做不到——
-    闸门拿不到当前位姿。缺口留在分母里，这个数字才是可复现、可被追问的。
+    闸门拿不到当前位姿。缺口留在分母里，这个数字才是可复现、经得起复核的。
     """
     planner, gate = engine
     report = run_suite(load_suite(), planner, gate)

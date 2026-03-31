@@ -137,7 +137,7 @@ def audit_table(entries: list[dict[str, Any]], *, path: str = "") -> str:
 def eval_report(report: SuiteReport, *, verbose: bool = False) -> str:
     """安全评测结果。
 
-    版面按「面试官/评审者会怎么读」排：先给三档计数（通过 / 已知缺口 / 意外失败），
+    版面按「读的人最想知道什么」排：先给三档计数（通过 / 已知缺口 / 意外失败），
     再给三个比率（召回 / 精确 / 误拦），最后才是明细。比率一定带分母——
     只写「拦截率 100%」而不给分母，等于什么都没说。
     """

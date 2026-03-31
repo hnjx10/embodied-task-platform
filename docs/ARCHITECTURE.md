@@ -225,7 +225,7 @@ HTTP 请求 ──► TaskRunner
 | `TECH_NAME` | robot-agent | 包名 `robot_agent`、CLI 命令、systemd unit、Dockerfile ENTRYPOINT、k8s 标签 |
 
 `brand.py` 在 L0，无任何依赖，被 `api/`、`cli.py`、`__init__.py` 引用。
-改名时只动前两个常量，部署脚本一行都不用改——「名字」会随简历、汇报、产品定位变，
+改名时只动前两个常量，部署脚本一行都不用改——「名字」会随产品定位与对外口径变，
 「标识」一变就要连着改 CI、systemd 与运维手册，这两件事不该绑在一起。
 
 `test_layering.py` 的 `LAYER_RANK` 里 `robot_agent.brand` 登记为 0，

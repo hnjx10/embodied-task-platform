@@ -238,7 +238,7 @@ async def test_metrics_endpoint(client: AsyncClient) -> None:
 async def test_openapi_schema(client: AsyncClient) -> None:
     spec = (await client.get("/openapi.json")).json()
     assert "/v1/tasks" in spec["paths"]
-    # 文档标题必须是简历上的项目名：面试官打开 /docs 看到的第一行就是它
+    # 文档标题必须是产品名：打开 /docs 看到的第一行就是它
     assert spec["info"]["title"] == PRODUCT_NAME_ZH
 
 
