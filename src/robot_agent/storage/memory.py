@@ -51,6 +51,10 @@ class InMemoryTaskRepository:
         items.sort(key=lambda t: t.created_at, reverse=True)
         return [t.model_copy(deep=True) for t in items[offset : offset + limit]]
 
+    async def count(self, *, status: str | None = None) -> int:
+        async with self._lock:
+            return sum(1 for t in self._tasks.values() if status is None or t.status == status)
+
     async def find_by_idempotency_key(self, key: str) -> TaskRecord | None:
         async with self._lock:
             task_id = self._by_idem.get(key)

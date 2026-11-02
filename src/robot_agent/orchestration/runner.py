@@ -270,6 +270,9 @@ class TaskRunner:
     ) -> list[TaskRecord]:
         return await self.repo.list(status=status, limit=limit, offset=offset)
 
+    async def count(self, *, status: str | None = None) -> int:
+        return await self.repo.count(status=status)
+
     async def purge(self) -> int:
         return await self.repo.purge_expired(self.settings.storage.retention_hours)
 

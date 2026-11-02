@@ -23,6 +23,7 @@ from robot_agent.api.schemas import (
     CancelRequest,
     RejectionRequest,
     TaskCreateRequest,
+    TaskListResponse,
 )
 from robot_agent.domain.state import TaskRecord
 from robot_agent.logging import get_logger
@@ -86,9 +87,17 @@ async def list_tasks(
     status: Annotated[str | None, Query(description="按状态过滤")] = None,
     limit: Annotated[int, Query(ge=1, le=200)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
-) -> dict[str, Any]:
+) -> TaskListResponse:
     records = await runner.list(status=status, limit=limit, offset=offset)
-    return {"items": [r.to_public() for r in records], "count": len(records)}
+    total = await runner.count(status=status)
+    return TaskListResponse(
+        items=[r.to_public() for r in records],
+        count=len(records),
+        total=total,
+        limit=limit,
+        offset=offset,
+        has_more=offset + len(records) < total,
+    )
 
 
 @router.get("/{task_id}", summary="查询任务")

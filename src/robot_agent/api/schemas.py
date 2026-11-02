@@ -53,8 +53,18 @@ class CancelRequest(BaseModel):
 
 
 class TaskListResponse(BaseModel):
+    """分页结果。
+
+    ``count`` 是本次返回的条数，``total`` 是满足过滤条件的总数——
+    客户端靠后者渲染「第 1-20 条，共 340 条」，也才知道还要不要翻页。
+    """
+
     items: list[dict[str, Any]]
     count: int
+    total: int
+    limit: int
+    offset: int
+    has_more: bool
 
 
 class StopRequest(BaseModel):

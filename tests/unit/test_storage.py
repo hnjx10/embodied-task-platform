@@ -138,3 +138,24 @@ def test_build_repository_unsupported() -> None:
 
     with pytest.raises(StorageError):
         build_repository("postgres://nope")
+
+
+async def test_count_matches_filter(repo) -> None:
+    """count 必须与 list 用同一套过滤条件，否则分页总数会和实际条数对不上。"""
+    await repo.create(TaskRecord(instruction="a"))
+    await repo.create(TaskRecord(instruction="b", status="succeeded"))
+    await repo.create(TaskRecord(instruction="c", status="succeeded"))
+
+    assert await repo.count() == 3
+    assert await repo.count(status="succeeded") == 2
+    assert await repo.count(status="blocked") == 0
+
+
+async def test_count_ignores_pagination(repo) -> None:
+    """总数与 limit/offset 无关：翻到第二页时 total 不能变成剩余条数。"""
+    for i in range(5):
+        await repo.create(TaskRecord(instruction=f"task-{i}"))
+
+    page = await repo.list(limit=2, offset=4)
+    assert len(page) == 1
+    assert await repo.count() == 5

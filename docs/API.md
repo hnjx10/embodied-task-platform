@@ -72,6 +72,21 @@ GET /v1/tasks/{task_id}
 GET /v1/tasks?status=blocked&limit=20&offset=0
 ```
 
+列表返回分页元数据，客户端不必靠「返回条数 < limit」猜是否还有下一页：
+
+```json
+{
+  "items": [{"id": "task_…", "status": "succeeded", "…": "…"}],
+  "count": 20,
+  "total": 340,
+  "limit": 20,
+  "offset": 0,
+  "has_more": true
+}
+```
+
+`count` 是本次返回条数，`total` 是满足过滤条件的总数（与 `limit`/`offset` 无关）。
+
 ## 订阅事件（SSE）
 
 ```

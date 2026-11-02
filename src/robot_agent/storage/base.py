@@ -29,6 +29,10 @@ class TaskRepository(Protocol):
         self, *, status: str | None = None, limit: int = 50, offset: int = 0
     ) -> list[TaskRecord]: ...
 
+    async def count(self, *, status: str | None = None) -> int:
+        """满足过滤条件的任务总数。分页要它才能给出「第 1-20 条，共 340 条」。"""
+        ...
+
     async def find_by_idempotency_key(self, key: str) -> TaskRecord | None: ...
 
     async def transition(

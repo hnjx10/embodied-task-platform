@@ -135,6 +135,16 @@ class SqliteTaskRepository:
             rows = await cur.fetchall()
         return [_load(r["payload"]) for r in rows]
 
+    async def count(self, *, status: str | None = None) -> int:
+        db = self._conn()
+        if status:
+            query: tuple = ("SELECT COUNT(*) AS n FROM tasks WHERE status = ?", (status,))
+        else:
+            query = ("SELECT COUNT(*) AS n FROM tasks", ())
+        async with db.execute(query[0], query[1]) as cur:
+            row = await cur.fetchone()
+        return int(row["n"]) if row else 0
+
     async def find_by_idempotency_key(self, key: str) -> TaskRecord | None:
         async with self._lock:
             return await self._find_idem_unlocked(key)

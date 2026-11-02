@@ -419,3 +419,31 @@ async def test_sync_wait_timeout_returns_202(
     body = resp.json()
     assert "note" in body, "超时后必须告诉调用方任务还在后台跑"
     assert "后台" in body["note"]
+
+
+async def test_list_tasks_reports_pagination(client: AsyncClient) -> None:
+    """列表必须给出 total / has_more：客户端靠它渲染「第几条，共几条」。"""
+    for i in range(3):
+        await client.post("/v1/tasks", json={"instruction": f"走到({i}.0, 0.0)"})
+
+    first = (await client.get("/v1/tasks?limit=2&offset=0")).json()
+
+    assert first["count"] == 2
+    assert first["total"] == 3
+    assert first["limit"] == 2
+    assert first["offset"] == 0
+    assert first["has_more"] is True
+
+    second = (await client.get("/v1/tasks?limit=2&offset=2")).json()
+    assert second["count"] == 1
+    assert second["total"] == 3
+    assert second["has_more"] is False
+
+
+async def test_list_tasks_total_respects_status_filter(client: AsyncClient) -> None:
+    await client.post("/v1/tasks", json={"instruction": "走到(1.0, 0.0)", "wait": True})
+
+    body = (await client.get("/v1/tasks?status=succeeded")).json()
+
+    assert body["total"] == len(body["items"])
+    assert body["has_more"] is False
