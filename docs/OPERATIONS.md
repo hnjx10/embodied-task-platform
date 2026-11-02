@@ -74,6 +74,7 @@ robot-agent doctor
 | `robot_agent_llm_requests_total{outcome!="ok"}` | LLM 异常 | 连续失败 → 熔断打开，已自动降级到规则 |
 | `robot_agent_audit_write_errors_total` | 审计写入失败 | **> 0 立即告警**（合规风险） |
 | `robot_agent_tasks_in_flight` | 在飞任务 | 持续 > 0 但无新完成 → 卡死 |
+| `robot_agent_event_subscriber_rejected_total` | SSE 订阅被拒次数 | 突增 → 客户端在狂开连接，按 `max_sse_subscribers` 治理 |
 
 Prometheus 抓取配置：
 
@@ -122,8 +123,28 @@ robot-agent tasks show <id> | jq '.started_at, .updated_at'
 
 - 检查 `robot_agent_steps_total` 是否还在增长；
 - 检查 Gazebo 是否还活着：`ros2 topic hz /odom`；
-- 若确认卡死：**先急停**（发 `/cmd_vel` 零速），再重启服务。任务会停在 running，
-  需要人工改状态或等过期清理。
+- 若确认卡死：**先急停**，再重启服务。
+
+```bash
+robot-agent estop --reason "任务卡死，现场确认"        # 或 POST /v1/robot/stop
+```
+
+急停不绑任务、不排队，直接下发零速并写一条 `emergency_stop` 审计（含原因）。
+它只消除动势、不改任务状态：卡住的任务仍然停在 `running`，需要人工改状态或等过期清理——
+**不要**为了让面板好看而把它改成 `cancelled`，那会污染事后复盘。
+
+### 机器人不停 / 急停无效
+
+按顺序排查，每一步都要确认「指令真的到了硬件」，而不是「接口返回了 200」：
+
+1. `robot-agent estop --reason "..."` 的返回码：非零说明 **没有** `stop` 技能被注册（HTTP 侧为 503），
+   此时问题在装配而不是网络；
+2. `ros2 topic echo /cmd_vel --once` 看是否收到 `linear.x == 0`；没有的话查 DDS 域/网段；
+3. 若节点仍在发布旧速度，说明有第二个发布者：`ros2 node list`、`ros2 topic info /cmd_vel -v`；
+4. 以上都正常仍不停车 → 现场物理急停按钮，服务端问题之后再查。
+
+`robot_agent_event_subscriber_rejected_total` 持续增长说明有客户端在狂开 SSE 连接，
+它们不会影响停车，但会掩盖真实告警——按 `max_sse_subscribers` 调参或查客户端。
 
 ### `readyz` 返回 503
 

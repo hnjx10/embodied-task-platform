@@ -10,7 +10,7 @@ from robot_agent.skills.mock import MockWorld, build_mock_registry
 
 
 def test_registry_lists_skills(registry: SkillRegistry) -> None:
-    assert registry.names() == ["get_pose", "goto_point", "push_cube"]
+    assert registry.names() == ["get_pose", "goto_point", "push_cube", "stop"]
     assert "goto_point" in registry
     assert "launch_missile" not in registry
 
@@ -100,4 +100,24 @@ def test_skill_without_description_rejected() -> None:
 
 
 def test_registry_len(registry: SkillRegistry) -> None:
-    assert len(registry) == 3
+    assert len(registry) == 4
+
+
+def test_stop_skill_zeroes_speed(registry: SkillRegistry, world) -> None:
+    """急停技能必须把速度真的清零，并留下可观测的命令记录。"""
+    registry.get("goto_point").execute(x=0.5, y=0.0, speed=0.2)
+    assert world.last_speed > 0
+
+    result = registry.get("stop").execute()
+
+    assert result.ok is True
+    assert world.last_speed == 0.0
+    assert world.command_history[-1][0] == "stop"
+
+
+def test_stop_skill_takes_no_params(registry: SkillRegistry) -> None:
+    """急停不接受参数：需要填参数的急停，现场根本来不及用。"""
+    from robot_agent.errors import SkillExecutionError
+
+    with pytest.raises(SkillExecutionError):
+        registry.get("stop").execute(speed=0.0)  # type: ignore[call-arg]

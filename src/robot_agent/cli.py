@@ -22,7 +22,7 @@ import typer
 from robot_agent import metrics
 from robot_agent.audit import tail_entries
 from robot_agent.config import Settings, load_settings
-from robot_agent.errors import RobotAgentError
+from robot_agent.errors import ExecutorUnavailableError, RobotAgentError
 from robot_agent.logging import configure_logging, request_context
 from robot_agent.version import __version__
 
@@ -277,6 +277,51 @@ def audit_tail(limit: Annotated[int, typer.Option("--limit")] = 20) -> None:
 
 
 # --------------------------------------------------------------------- 其它
+
+
+@app.command()
+def estop(
+    reason: Annotated[str, typer.Option("--reason", "-r", help="急停原因（会写入审计）")] = (
+        "cli emergency stop"
+    ),
+    ros: Annotated[bool, typer.Option("--ros", help="显式使用 ROS2 执行器")] = False,
+    mock: Annotated[bool, typer.Option("--mock", help="显式使用 mock 执行器")] = False,
+    as_json: Annotated[bool, typer.Option("--json", help="以 JSON 输出结果")] = False,
+) -> None:
+    """立即急停（尽力而为）。
+
+    刻意做成不需要 task_id、也不排队的独立命令：等拿到任务 ID 或排队进物理动作
+    信号量，事故已经发生了。它绕过了编排层，因此这里必须自己写审计。
+    """
+    settings = _settings(mock=mock or not ros, ros=ros, json_logs=False)
+    try:
+        code = asyncio.run(_estop_async(settings, reason, as_json))
+    except RobotAgentError as exc:
+        _fail(exc, as_json)
+        return
+    raise typer.Exit(code)
+
+
+async def _estop_async(settings: Settings, reason: str, as_json: bool) -> int:
+    from robot_agent.factory import build_assembly
+
+    assembly = await build_assembly(settings)
+    try:
+        if not assembly.registry.has("stop"):
+            raise ExecutorUnavailableError(
+                "当前执行器没有 stop 技能，急停指令未下发",
+                details={"backend": settings.executor.backend},
+            )
+        assembly.components.executor.emergency_stop(reason=reason)
+        assembly.audit.record("emergency_stop", {"reason": reason, "via": "cli"})
+        if as_json:
+            payload = {"ok": True, "stopped": True, "reason": reason}
+            typer.echo(json.dumps(payload, ensure_ascii=False))
+        else:
+            typer.secho(f"已急停（{reason}）", fg=typer.colors.YELLOW)
+        return 0
+    finally:
+        await assembly.aclose()
 
 
 @app.command()

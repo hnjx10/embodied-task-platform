@@ -24,7 +24,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from robot_agent.api.routes import health, tasks
+from robot_agent.api.routes import health, robot, tasks
 from robot_agent.api.routes import metrics as metrics_routes
 from robot_agent.config import Settings, load_settings
 from robot_agent.errors import RobotAgentError
@@ -242,6 +242,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json",
         openapi_tags=[
             {"name": "tasks", "description": "任务提交、查询、审批与事件订阅"},
+            {"name": "robot", "description": "机器人本体操作（急停）"},
             {"name": "health", "description": "存活/就绪探针与版本"},
             {"name": "observability", "description": "指标导出"},
         ],
@@ -261,6 +262,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(tasks.router)
+    app.include_router(robot.router)
     app.include_router(metrics_routes.router)
 
     _register_exception_handlers(app)

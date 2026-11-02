@@ -51,3 +51,17 @@ def test_audit_verify_without_log(capsys: pytest.CaptureFixture[str], tmp_path: 
 def test_doctor_exits_zero_in_mock_mode(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["doctor"]) == 0
     assert "配置加载成功" in capsys.readouterr().out
+
+
+def test_estop_exit_zero_and_audited(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    """急停命令不需要 task_id，且必须留审计——它绕过了编排层。"""
+    from robot_agent.audit import tail_entries
+
+    code = main(["estop", "--json", "--reason", "e2e test"])
+    assert code == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["stopped"] is True
+    assert payload["reason"] == "e2e test"
+
+    entries = tail_entries(tmp_path / "audit.jsonl", limit=5)
+    assert any(e.get("event") == "emergency_stop" for e in entries)

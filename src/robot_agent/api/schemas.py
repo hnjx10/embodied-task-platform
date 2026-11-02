@@ -57,6 +57,14 @@ class TaskListResponse(BaseModel):
     count: int
 
 
+class StopRequest(BaseModel):
+    """急停请求。字段全部可选——停车不该因为少填一个参数而被拒。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(default="operator emergency stop", max_length=200)
+
+
 class ErrorBody(BaseModel):
     code: str
     message: str

@@ -2,7 +2,7 @@
 
 面向 ROS2 / Gazebo 机器人的 **LLM 任务编排服务**：把自然语言指令编译成受约束的技能序列，经安全闸门校验后驱动执行器完成任务，全过程可审计、可观测、可人工接管。
 
-不是「跑一次 demo 的脚本」，而是按生产标准组织的服务：分层依赖注入、策略化安全模型、哈希链审计、结构化日志、Prometheus 指标、可插拔执行器，以及 188 个测试与 CI 门禁。
+不是「跑一次 demo 的脚本」，而是按生产标准组织的服务：分层依赖注入、策略化安全模型、哈希链审计、结构化日志、Prometheus 指标、可插拔执行器，以及 194 个测试与 CI 门禁。
 
 ```
 自然语言 ──► 规划 ──► 安全闸门 ──► 执行 ──► 核验 ──► 报告
@@ -40,6 +40,7 @@ pip install -e ".[dev,api]"
 
 robot-agent doctor                                  # 自检：配置/执行器/审计目录
 robot-agent run "把红色方块推到左边"                  # mock 执行器，无需 ROS
+robot-agent estop --reason "现场有人"                # 急停：不绑任务、不排队
 ```
 
 ```
@@ -182,6 +183,7 @@ ROBOT_AGENT_CONFIG=config/production.yaml robot-agent run "把红色方块推到
 2. **审批后重新校验**：批准的计划在续跑时会**再跑一次策略链**——人工修改同样受约束，否则审批就成了绕过安全层的通道。
 3. **超时先急停**：技能超时后立即发零速指令，再谈重试。Python 线程无法强杀，所以超时处理是「放弃等待 + 急停」，不是假设线程已死。
 4. **先限量再解析**：HTTP 层的请求体上限（默认 64 KiB）在解析 JSON 之前生效，且不信 `Content-Length`——chunked 传输没有这个头，头也可以撒谎。
+5. **急停不排队**：`POST /v1/robot/stop` / `robot-agent estop` 不绑任务、不进信号量，直接下发零速；执行器没有 `stop` 技能时返回 503 而不是假报成功。
 
 ---
 
@@ -237,7 +239,7 @@ robot-agent run "把红色方块推到左边"
 ## 测试与质量门禁
 
 ```bash
-pytest                                              # 188 个用例
+pytest                                              # 194 个用例
 pytest --cov=robot_agent --cov-report=term-missing  # 覆盖率约 79%
 ruff check src tests && ruff format --check src tests
 mypy src

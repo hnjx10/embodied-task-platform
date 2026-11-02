@@ -40,6 +40,10 @@ class GetPoseParams(SkillParams):
     target: Literal["robot", "red", "green", "blue"] = Field(description="查询对象")
 
 
+class StopParams(SkillParams):
+    """急停无参数——需要参数才能停下来的急停不叫急停。"""
+
+
 class MockWorld:
     """极简世界模型：记录机器人与方块位姿。带锁，可被多线程调用。"""
 
@@ -74,6 +78,12 @@ class MockWorld:
             if target == "robot":
                 return (self.robot[0], self.robot[1])
             return self.cubes.get(target)
+
+    def stop(self) -> None:
+        """急停：速度归零。位姿保持不变——急停不是「撤回」，是把动势消掉。"""
+        with self._lock:
+            self.last_speed = 0.0
+            self.command_history.append(("stop", {"speed": 0.0}))
 
     def reset(self) -> None:
         with self._lock:
@@ -138,9 +148,31 @@ class MockGetPoseSkill(Skill):
         )
 
 
+class MockStopSkill(Skill):
+    name: ClassVar[str] = "stop"
+    description: ClassVar[str] = "紧急停止：立即把线速度清零"
+    params_model: ClassVar[type[SkillParams]] = StopParams
+    risk: ClassVar[RiskLevel] = "low"
+    is_motion: ClassVar[bool] = False
+
+    def __init__(self, world: MockWorld) -> None:
+        self.world = world
+
+    def run(self) -> SkillResult:  # type: ignore[override]
+        self.world.stop()
+        return SkillResult(ok=True, detail="已急停（速度归零）", data={"speed": 0.0})
+
+
 def build_mock_registry(arena: ArenaSettings | None = None) -> tuple[SkillRegistry, MockWorld]:
     """装配 mock 执行器。返回 (registry, world)，world 便于测试断言状态。"""
     world = MockWorld(arena)
     registry = SkillRegistry()
-    registry.register_all([MockGotoSkill(world), MockPushSkill(world), MockGetPoseSkill(world)])
+    registry.register_all(
+        [
+            MockGotoSkill(world),
+            MockPushSkill(world),
+            MockGetPoseSkill(world),
+            MockStopSkill(world),
+        ]
+    )
     return registry, world

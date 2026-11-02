@@ -302,3 +302,40 @@ async def test_sse_subscriber_limit_returns_429(tmp_path: Path) -> None:
 
             assert resp.status_code == 429
             assert resp.json()["error"]["code"] == "too_many_subscribers"
+
+
+async def test_emergency_stop_endpoint(client: AsyncClient) -> None:
+    """急停不需要 task_id，必须留审计，且不改变任务状态。"""
+    from robot_agent.audit import tail_entries
+
+    resp = await client.post("/v1/robot/stop", json={"reason": "integration test"})
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["stopped"] is True
+    assert body["reason"] == "integration test"
+    assert body["backend"] == "mock"
+
+    settings = client.app_state.settings  # type: ignore[attr-defined]
+    entries = tail_entries(settings.audit.path, limit=5)
+    assert any(e.get("event") == "emergency_stop" for e in entries)
+
+
+async def test_emergency_stop_without_body(client: AsyncClient) -> None:
+    """空 body 也要能停——停车不该因为少填参数被拒。"""
+    resp = await client.post("/v1/robot/stop")
+    assert resp.status_code == 200
+    assert resp.json()["reason"]
+
+
+async def test_emergency_stop_reports_missing_skill(
+    client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """执行器没有 stop 技能时必须说实话（503），而不是回一个假的 200。"""
+    registry = client.app_state.registry  # type: ignore[attr-defined]
+    monkeypatch.setattr(registry, "has", lambda name: False)
+
+    resp = await client.post("/v1/robot/stop")
+
+    assert resp.status_code == 503
+    assert resp.json()["error"]["code"] == "executor_unavailable"
