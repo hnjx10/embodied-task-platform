@@ -387,3 +387,35 @@ async def test_idempotency_ignores_wrapping_whitespace(client: AsyncClient) -> N
     )
 
     assert first.json()["id"] == second.json()["id"]
+
+
+async def test_sync_wait_timeout_returns_202(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """wait=true 不能把 HTTP 连接挂死：超时就返回 202，任务转入后台继续跑。"""
+    import asyncio
+
+    from robot_agent.api.app import create_app
+
+    settings = make_settings(tmp_path, api={"request_timeout_s": 0.05})
+    app = create_app(settings)
+    async with app.router.lifespan_context(app):
+        runner = app.state.runner
+        real_execute = runner.execute
+
+        async def slow_execute(task_id: str):
+            await asyncio.sleep(5.0)  # 长于 request_timeout_s，必然超时
+            return await real_execute(task_id)
+
+        monkeypatch.setattr(runner, "execute", slow_execute)
+
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.post(
+                "/v1/tasks", json={"instruction": "把红色方块推到左边", "wait": True}
+            )
+
+    assert resp.status_code == 202
+    body = resp.json()
+    assert "note" in body, "超时后必须告诉调用方任务还在后台跑"
+    assert "后台" in body["note"]

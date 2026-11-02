@@ -66,5 +66,7 @@ class PurgeScheduler:
                 # 用 wait_for 而不是 sleep，停下时不必等满一个周期
                 await asyncio.wait_for(self._stopped.wait(), timeout=self.interval_s)
                 return  # 收到停止信号
-            except TimeoutError:
+            except asyncio.TimeoutError:
+                # 必须捕获 asyncio 的那个：3.10 里它和内置 TimeoutError 不是同一个类，
+                # 写成内置版本会让一次正常超时直接把循环打死（CI 的 3.10 矩阵就是这么抓到的）。
                 await self.run_once()

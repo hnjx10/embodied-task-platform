@@ -2,7 +2,7 @@
 
 面向 ROS2 / Gazebo 机器人的 **LLM 任务编排服务**：把自然语言指令编译成受约束的技能序列，经安全闸门校验后驱动执行器完成任务，全过程可审计、可观测、可人工接管。
 
-不是「跑一次 demo 的脚本」，而是按生产标准组织的服务：分层依赖注入、策略化安全模型、哈希链审计、结构化日志、Prometheus 指标、可插拔执行器，以及 207 个测试与 CI 门禁。
+不是「跑一次 demo 的脚本」，而是按生产标准组织的服务：分层依赖注入、策略化安全模型、哈希链审计、结构化日志、Prometheus 指标、可插拔执行器，以及 208 个测试与 CI 门禁。
 
 ```
 自然语言 ──► 规划 ──► 安全闸门 ──► 执行 ──► 核验 ──► 报告
@@ -239,7 +239,7 @@ robot-agent run "把红色方块推到左边"
 ## 测试与质量门禁
 
 ```bash
-pytest                                              # 207 个用例
+pytest                                              # 208 个用例
 pytest --cov=robot_agent --cov-report=term-missing  # 覆盖率约 79%
 ruff check src tests && ruff format --check src tests
 mypy src

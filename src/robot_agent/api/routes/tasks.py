@@ -58,7 +58,8 @@ async def create_task(
             record = await asyncio.wait_for(
                 runner.execute(record.id), timeout=settings.api.request_timeout_s
             )
-        except TimeoutError:
+        except asyncio.TimeoutError:
+            # 3.10 里 asyncio 的超时与内置 TimeoutError 不是同一个类，写错会漏接
             logger.warning("sync_wait_timeout", task_id=record.id)
             body = record.to_public()
             body["note"] = (
@@ -117,7 +118,7 @@ async def stream_events(
                     break
                 try:
                     item = await asyncio.wait_for(queue.get(), timeout=15.0)
-                except TimeoutError:
+                except asyncio.TimeoutError:
                     yield ": keep-alive\n\n"
                     continue
                 if item is None:
