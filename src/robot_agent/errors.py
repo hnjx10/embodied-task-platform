@@ -182,3 +182,11 @@ class TaskCancelledError(RobotAgentError):
 class UnauthorizedError(RobotAgentError):
     code = "unauthorized"
     http_status = 401
+
+
+class TooManySubscribersError(RobotAgentError):
+    """单任务的事件订阅者超过上限：客户端可重试（退避后换个连接再订）。"""
+
+    code = "too_many_subscribers"
+    http_status = 429
+    retryable = True

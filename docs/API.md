@@ -141,6 +141,7 @@ curl -s localhost:8080/readyz | jq
 | 422 | `validation_error` | 请求体校验失败 |
 | 422 | `planning_error` | 指令无法解析 |
 | 422 | `safety_violation` | 安全闸门拒绝 |
+| 429 | `too_many_subscribers` | 同一任务的 SSE 订阅数超限（默认 32） |
 | 500 | `internal_error` | 未预期错误（只回 trace_id，不回内部细节） |
 | 502 | `llm_error` | LLM 上游异常 |
 | 503 | `executor_unavailable` | 执行器不可用 |
@@ -154,6 +155,7 @@ curl -s localhost:8080/readyz | jq
 | 请求体大小 | 64 KiB（超限 413） | `ROBOT_AGENT_API__MAX_REQUEST_BYTES` |
 | 同步等待（`wait=true`） | 180s，超时返回 202 并转入后台 | `ROBOT_AGENT_API__REQUEST_TIMEOUT_S` |
 | 并发执行任务数 | 4（物理动作始终串行） | `ROBOT_AGENT_API__MAX_CONCURRENT_TASKS` |
+| 单任务 SSE 订阅 | 32，超限 429 | `ROBOT_AGENT_API__MAX_SSE_SUBSCRIBERS` |
 | 列表分页 | `limit ≤ 200` | — |
 | 指令长度 | 500 字符 | — |
 

@@ -108,6 +108,11 @@ LLM_TOKENS_TOTAL = Counter(f"{_PREFIX}_llm_tokens_total", "LLM token 用量", ["
 AUDIT_ENTRIES_TOTAL = Counter(f"{_PREFIX}_audit_entries_total", "审计条目写入数", ["event"])
 AUDIT_WRITE_ERRORS_TOTAL = Counter(f"{_PREFIX}_audit_write_errors_total", "审计写入失败次数")
 
+# ---------------------------------------------------------------- 事件推送
+EVENT_SUBSCRIBER_REJECTED_TOTAL = Counter(
+    f"{_PREFIX}_event_subscriber_rejected_total", "因订阅者上限被拒的 SSE 订阅次数"
+)
+
 
 def render_metrics() -> tuple[bytes, str]:
     """返回 (payload, content_type)，供 /metrics 端点直接写响应。"""
@@ -132,6 +137,7 @@ def reset_for_tests() -> None:
         LLM_TOKENS_TOTAL,
         AUDIT_ENTRIES_TOTAL,
         AUDIT_WRITE_ERRORS_TOTAL,
+        EVENT_SUBSCRIBER_REJECTED_TOTAL,
     ]
     for collector in collectors:
         # 老版本 prometheus_client 没有 clear()，忽略即可

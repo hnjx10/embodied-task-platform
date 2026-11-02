@@ -274,3 +274,31 @@ async def test_body_limit_configured_per_app(tmp_path: Path) -> None:
             resp = await c.post("/v1/tasks", json={"instruction": "x" * 2000, "wait": False})
             assert resp.status_code == 413
             assert resp.json()["error"]["details"]["limit_bytes"] == 1024
+
+
+async def test_sse_subscriber_limit_returns_429(tmp_path: Path) -> None:
+    """每条 SSE 连接占一条队列，超限必须拒绝，而不是把内存交给客户端决定。"""
+    import asyncio
+
+    settings = make_settings(tmp_path, api={"request_timeout_s": 10.0, "max_sse_subscribers": 1})
+    settings.safety.require_approval_for = ["push_cube"]
+    app = create_app(settings)
+    async with app.router.lifespan_context(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            task_id = (
+                await c.post("/v1/tasks", json={"instruction": "把红色方块推到左边"})
+            ).json()["id"]
+            for _ in range(100):
+                status = (await c.get(f"/v1/tasks/{task_id}")).json()["status"]
+                if status == "awaiting_approval":
+                    break
+                await asyncio.sleep(0.05)
+            assert status == "awaiting_approval"
+
+            # 先占满配额（等价于一个已连上的订阅者）
+            app.state.events.subscribe(task_id)
+            resp = await c.get(f"/v1/tasks/{task_id}/events")
+
+            assert resp.status_code == 429
+            assert resp.json()["error"]["code"] == "too_many_subscribers"

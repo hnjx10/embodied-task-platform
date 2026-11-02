@@ -114,7 +114,7 @@ async def build_assembly(settings: Settings, *, force_rules: bool = False) -> As
     elif settings.env != "test":
         logger.warning("storage_ephemeral", url=settings.storage.url)
 
-    events = EventBus()
+    events = EventBus(max_subscribers_per_task=settings.api.max_sse_subscribers)
     runner = TaskRunner(
         settings=settings,
         repository=repository,  # type: ignore[arg-type]

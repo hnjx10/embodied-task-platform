@@ -184,6 +184,12 @@ class APISettings(BaseModel):
         le=8 * 1024 * 1024,
         description="单个请求体字节上限；指令只有 500 字符，64 KiB 已足够宽松",
     )
+    max_sse_subscribers: int = Field(
+        default=32,
+        ge=1,
+        le=1024,
+        description="单任务 SSE 订阅者上限，超限返回 429（每个订阅者占一条队列）",
+    )
 
     @field_validator("auth_token", mode="before")
     @classmethod
