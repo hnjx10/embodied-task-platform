@@ -45,6 +45,63 @@ def test_geofence_blocked() -> None:
     assert "禁区" in result.first_reason()
 
 
+# --------------------------------------------------- 相对位移与嵌套点参数
+#
+# 这两类参数的共同点是「坐标不在顶层 x/y 上」。策略若只读扁平字段，
+# 就会安静地漏过整类指令——演示时看不出来，撞墙时才看出来。
+
+
+def test_relative_move_beyond_arena_diagonal_blocked() -> None:
+    """位移超过场地对角线：无论起点在哪都必然出界，因此不需要位姿也能拒。"""
+    gate = make_gate()
+    result = gate.screen(
+        plan_of(PlanStep(skill="move_relative", args={"dx": 0.0, "dy": 10.0, "speed": 0.15}))
+    )
+    assert not result.ok
+    assert result.violations[0].policy == "arena_bounds"
+    assert "对角线" in result.first_reason()
+
+
+def test_relative_move_within_diagonal_allowed() -> None:
+    """对角线以内不越权拒绝——精确判定需要位姿，那是编排层的事，不是闸门猜。"""
+    gate = make_gate()
+    result = gate.screen(
+        plan_of(PlanStep(skill="move_relative", args={"dx": 0.0, "dy": 3.0, "speed": 0.15}))
+    )
+    assert result.ok
+
+
+def test_patrol_waypoint_out_of_bounds_blocked() -> None:
+    gate = make_gate()
+    result = gate.screen(
+        plan_of(
+            PlanStep(
+                skill="patrol",
+                args={"waypoints": [{"x": 0.5, "y": 0.5}, {"x": 3.0, "y": 3.0}]},
+            )
+        )
+    )
+    assert not result.ok
+    assert result.violations[0].policy == "arena_bounds"
+
+
+def test_patrol_waypoint_in_geofence_blocked() -> None:
+    gate = make_gate(geofences=[Geofence(name="dock", x=1.0, y=1.0, radius=0.5)])
+    result = gate.screen(
+        plan_of(PlanStep(skill="patrol", args={"waypoints": [{"x": 1.1, "y": 1.0}]}))
+    )
+    assert not result.ok
+    assert result.violations[0].policy == "geofence"
+
+
+def test_patrol_waypoints_in_bounds_allowed() -> None:
+    gate = make_gate()
+    result = gate.screen(
+        plan_of(PlanStep(skill="patrol", args={"waypoints": [{"x": 0.5, "y": 0.5}]}))
+    )
+    assert result.ok
+
+
 def test_overspeed_clamped_by_default() -> None:
     gate = make_gate()
     result = gate.screen(

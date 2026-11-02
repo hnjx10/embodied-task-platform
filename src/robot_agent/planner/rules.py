@@ -43,6 +43,14 @@ _DIRECTION_ALIASES: dict[str, tuple[float, float]] = {
     "后方": (0.0, -1.0),
 }
 
+#: 方向词 → 单位向量。注意 move_relative 的坐标系：dx 右为正、dy 前为正。
+_DIRECTION_VECTORS: dict[str, tuple[float, float]] = {
+    "前": (0.0, 1.0),
+    "后": (0.0, -1.0),
+    "左": (-1.0, 0.0),
+    "右": (1.0, 0.0),
+}
+
 # 分句符：多步指令按顺序拆解。注意 **不能** 用正则简单切分——坐标里的逗号
 # 会被误当分隔符，把 "(1.0, 0.5)" 切成两半。这里用括号深度感知的手写扫描。
 _CLAUSE_SEPARATORS = ("然后", "接着", "随后", "之后", "并且")
@@ -54,6 +62,42 @@ _PUSH_RE = re.compile(
 _GOTO_RE = re.compile(r"(?:开到|走到|移动到|导航到|行驶到|回到|返回|前往|去)\s*(?P<target>.+)")
 _COORD_RE = re.compile(r"(-?\d+(?:\.\d+)?)\s*[,，\s]\s*(-?\d+(?:\.\d+)?)")
 _EXPLICIT_COORD_RE = re.compile(r"x\s*=\s*(-?\d+(?:\.\d+)?).*?y\s*=\s*(-?\d+(?:\.\d+)?)", re.I)
+
+#: 中文数字。指令里「往前开一米」比「往前开 1 米」更常见，不认这些就是明明能懂却报错。
+_CN_NUMERALS = {
+    "半": 0.5,
+    "一": 1.0,
+    "两": 2.0,
+    "二": 2.0,
+    "三": 3.0,
+    "四": 4.0,
+    "五": 5.0,
+    "六": 6.0,
+    "七": 7.0,
+    "八": 8.0,
+    "九": 9.0,
+    "十": 10.0,
+}
+
+_DISTANCE = r"(?P<dist>\d+(?:\.\d+)?|[半一两二三四五六七八九十])\s*(?:米|m|M)"
+
+#: 相对位移：方向 + 距离。`往后` / `左移` / `前进` 都要认。
+_RELATIVE_RE = re.compile(
+    rf"(?P<dir>前|后|左|右)(?:方|边|侧|进|退|移)?[^0-9半一两二三四五六七八九十]{{0,6}}{_DISTANCE}"
+)
+
+#: 「充电」单独出现时是动词，但「充电桩」是名词。不加这个负向前瞻，
+#: 「开到离充电桩远一点的地方」会命中回充——指令意图正好相反，而且它会兴高采烈地执行。
+_DOCK_RE = re.compile(r"(?:回充|回去充电|去充电|回充电桩|补充电量|充会儿电|充电(?!桩))")
+_UNDOCK_RE = re.compile(
+    rf"(?:离开充电桩|退出充电|离桩|从充电桩出来)(?:[^0-9半一两二三四五六七八九十]{{0,6}}{_DISTANCE})?"
+)
+_LED_RE = re.compile(r"(?:灯带|指示灯|灯).*?(?P<color>红|绿|蓝)|(?P<off>关)(?:掉)?(?:灯|灯带)")
+_CAPTURE_RE = re.compile(r"(?:拍照|拍张照|拍个照|拍一下|抓拍|截图|拍张图)")
+_BATTERY_RE = re.compile(r"(?:电量|电池|剩余电|还有多少电)")
+_RESET_ODOM_RE = re.compile(
+    r"(?:重置里程计|里程计归零|里程计清零|里程计重置|重置?odom|reset\s*odom)", re.I
+)
 
 
 def split_clauses(text: str) -> list[str]:
@@ -134,6 +178,20 @@ class RulePlanner:
     # ------------------------------------------------------------------ 单句
 
     def parse_clause(self, clause: str) -> PlanStep | None:
+        # 顺序有意义：越具体的句式越先匹配。
+        # 「离开充电桩」同时含「充电」，不先判 undock 就会被当成回充；
+        # 「把充电桩旁的方块推过来」含「充电」，不先判 push 就会被当成回充。
+        if _RESET_ODOM_RE.search(clause):
+            return PlanStep(skill="reset_odom", args={})
+
+        if _CAPTURE_RE.search(clause):
+            return PlanStep(skill="capture_image", args={"label": "snapshot"})
+
+        undock = _UNDOCK_RE.search(clause)
+        if undock:
+            distance = self._distance(undock.group("dist")) if undock.group("dist") else 0.3
+            return PlanStep(skill="undock", args={"distance": distance})
+
         push = _PUSH_RE.search(clause)
         if push:
             color = _COLOR_ALIASES.get(push.group("color"))
@@ -145,6 +203,35 @@ class RulePlanner:
                     expect={"color": color, "x": coords[0], "y": coords[1], "tolerance": 0.25},
                 )
             return None
+
+        relative = _RELATIVE_RE.search(clause)
+        if relative:
+            distance = self._distance(relative.group("dist"))
+            nx, ny = _DIRECTION_VECTORS[relative.group("dir")]
+            return PlanStep(
+                skill="move_relative",
+                args={
+                    "dx": round(nx * distance, 4),
+                    "dy": round(ny * distance, 4),
+                    "speed": self._infer_speed(clause),
+                },
+            )
+
+        led = _LED_RE.search(clause)
+        if led:
+            if led.group("off"):
+                return PlanStep(skill="set_led", args={"color": "off", "brightness": 0.0})
+            color = _COLOR_ALIASES.get(led.group("color") or "")
+            if color:
+                return PlanStep(skill="set_led", args={"color": color, "brightness": 1.0})
+
+        if _DOCK_RE.search(clause):
+            return PlanStep(skill="dock", args={})
+
+        # 电池查询放在回充之后：「补充电量」既含「电量」也含「充电」，
+        # 先判查询就会把一条充电指令当成只读查询放过去——语义完全相反。
+        if _BATTERY_RE.search(clause):
+            return PlanStep(skill="get_battery", args={})
 
         goto = _GOTO_RE.search(clause)
         if goto:
@@ -158,6 +245,12 @@ class RulePlanner:
                 )
             return None
         return None
+
+    def _distance(self, raw: str) -> float:
+        """把「半」「一」「3」统一成米数。"""
+        if raw in _CN_NUMERALS:
+            return _CN_NUMERALS[raw]
+        return float(raw)
 
     def parse_target(self, raw: str) -> tuple[float, float] | None:
         """把「左边」「(1.2, -0.3)」「x=1.2 y=0」统一成坐标。"""

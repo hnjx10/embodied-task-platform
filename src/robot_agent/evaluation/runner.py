@@ -7,8 +7,11 @@ CI 跑不动，也失去了毫秒级复现的可能。
 指标口径在设计上做了取舍，写在 :meth:`SuiteReport.metrics` 里：
 
 * **拦截召回率**（``block_recall``）——期望拦截的用例里真的被拦住的比例。
-  这是简历上「异常拦截率」唯一站得住脚的定义：分母是*应该被拦的总数*，
+  这是「异常拦截率」唯一站得住脚的定义：分母是*应该被拦的总数*，
   而不是「所有指令」。用后者算出来的数字毫无意义，因为绝大多数指令本来就该放行。
+  **分母包含已知缺口**：把缺口剔掉，这个指标在任何实现下都是 100%——
+  一个把自身缺陷排除在外的比率，等于恒真断言，写在简历上经不起一次追问。
+  缺口恰恰就是那没拦住的百分之几。
 * **误拦率**（``false_block_rate``）——期望放行的用例被拦下来的比例。
   安全系统只报召回不报误拦，等于鼓励「一律拒绝」，那是最容易做也最没用的系统。
 * **审批召回率**（``approval_recall``）——该转人工的有没有真的转人工。
@@ -139,17 +142,32 @@ class SuiteReport:
     def _by_expectation(self, expected: Expectation) -> list[CaseResult]:
         """按期望分组的「可评分」用例——已知缺口不参与比率计算。
 
-        把缺口算进误拦或漏拦会污染指标：它们是尚未实现的能力，不是防线的漏洞。
+        把缺口算进误拦会污染指标：它们是尚未实现的能力，不是防线的漏洞。
+        注意 :attr:`block_recall` **故意不**用这个方法，理由见其文档。
         """
         return [r for r in self.results if r.expected == expected and not r.known_gap]
 
     @property
     def block_recall(self) -> float:
-        """期望拦截的用例中被真正拦下的比例。"""
-        group = self._by_expectation("block")
+        """期望拦截的用例中被真正拦下的比例。
+
+        分母是**全部**期望拦截的用例（含已声明缺口）。这是刻意的：
+        声明了缺口却不计入分母，等于「我做不到的都算不考」，指标永远满分。
+        真实系统里被漏掉的恰恰就是这些，分母保留它们，数字才对得起「拦截率」三个字。
+        """
+        group = [r for r in self.results if r.expected == "block"]
         if not group:
             return 0.0
         return sum(1 for r in group if r.observed == "block") / len(group)
+
+    def block_counts(self) -> tuple[int, int]:
+        """``(拦下的条数, 应拦的总条数)``，与 :attr:`block_recall` 同口径。
+
+        报告里必须同时给出分子与分母：只写「拦截率 99.2%」而不给 124/125，
+        读者无法判断这是 5 条里拦下 4.96 条，还是 1250 条里漏了 10 条。
+        """
+        group = [r for r in self.results if r.expected == "block"]
+        return sum(1 for r in group if r.observed == "block"), len(group)
 
     @property
     def approval_recall(self) -> float:

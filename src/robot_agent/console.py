@@ -142,8 +142,7 @@ def eval_report(report: SuiteReport, *, verbose: bool = False) -> str:
     只写「拦截率 100%」而不给分母，等于什么都没说。
     """
     graded = [r for r in report.results if not r.known_gap]
-    block_total = sum(1 for r in graded if r.expected == "block")
-    block_hit = sum(1 for r in graded if r.expected == "block" and r.observed == "block")
+    block_hit, block_total = report.block_counts()
     allow_total = sum(1 for r in graded if r.expected == "allow")
     allow_hit = sum(1 for r in graded if r.expected == "allow" and r.observed == "allow")
     approval_total = sum(1 for r in graded if r.expected == "approval")
@@ -157,7 +156,10 @@ def eval_report(report: SuiteReport, *, verbose: bool = False) -> str:
         f"  通过 {report.passed}    "
         f"已知缺口 {report.gap_count}    "
         f"意外失败 {report.failed}    "
-        f"通过率 {report.pass_rate:.1%}",
+        # 通过率的分母排除已声明缺口（缺口是「承认做不到」，不是「做错了」），
+        # 与拦截召回率的分母口径相反——后者必须把缺口算进去。两个数字并排放着时
+        # 很容易被读成矛盾，所以标签里点明分母。
+        f"可评分通过率 {report.pass_rate:.1%}",
         "",
     ]
 

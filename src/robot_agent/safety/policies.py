@@ -136,45 +136,67 @@ class ParamSchemaPolicy:
 
 
 class ArenaBoundsPolicy:
-    """目标点必须落在场地内。"""
+    """目标点必须落在场地内。
+
+    一个步骤可能携带**多个**点：``patrol`` 把目标点藏在 ``waypoints`` 列表里，
+    只看 ``x``/``y`` 会漏掉整条巡逻路线——那种漏洞在演示里永远发现不了，
+    只会在真机撞墙时暴露。所以这里按 :func:`_candidate_points` 逐点判定。
+
+    对 ``move_relative`` 这类「位移而非目标点」的技能，闸门拿不到当前位姿，
+    无法算出落点。此时退一步守住一条与位姿无关的硬约束：**位移长度不得超过
+    场地对角线**——起点无论在哪，跨过整条对角线的位移都必然出界。
+    这条判定零误拦（不存在起点使它能留在场内），代价是挡住一部分合法长位移，
+    需要精确判定时由编排层注入位姿，而不是让闸门去猜。
+    """
 
     name = "arena_bounds"
 
     def evaluate(self, step: PlanStep, ctx: PolicyContext) -> PolicyDecision:
-        coords = _extract_xy(step)
-        if coords is None:
-            return PolicyDecision.pass_(self.name)
-        x, y = coords
+        delta = _extract_delta(step)
+        if delta is not None:
+            return self._check_delta(delta, ctx)
+
         half = ctx.arena.half_size
-        if not (-half <= x <= half and -half <= y <= half):
+        for x, y in _candidate_points(step):
+            if not (-half <= x <= half and -half <= y <= half):
+                return PolicyDecision.deny(
+                    self.name,
+                    f"目标点 ({x:.2f}, {y:.2f}) 超出场地边界 ±{half}m",
+                    x=x,
+                    y=y,
+                )
+        return PolicyDecision.pass_(self.name)
+
+    def _check_delta(self, delta: tuple[float, float], ctx: PolicyContext) -> PolicyDecision:
+        dx, dy = delta
+        span = 2.0 * ctx.arena.half_size * math.sqrt(2.0)
+        distance = math.hypot(dx, dy)
+        if distance > span:
             return PolicyDecision.deny(
                 self.name,
-                f"目标点 ({x:.2f}, {y:.2f}) 超出场地边界 ±{half}m",
-                x=x,
-                y=y,
+                f"相对位移 {distance:.2f}m 超过场地对角线 {span:.2f}m，任何起点都会出界",
+                dx=dx,
+                dy=dy,
             )
         return PolicyDecision.pass_(self.name)
 
 
 class GeofencePolicy:
-    """目标点不得落在禁区内。"""
+    """目标点不得落在禁区内。同样逐点判定，``waypoints`` 里每个点都要过一遍。"""
 
     name = "geofence"
 
     def evaluate(self, step: PlanStep, ctx: PolicyContext) -> PolicyDecision:
-        coords = _extract_xy(step)
-        if coords is None:
-            return PolicyDecision.pass_(self.name)
-        x, y = coords
-        for fence in ctx.safety.geofences:
-            if fence.contains(x, y):
-                return PolicyDecision.deny(
-                    self.name,
-                    f"目标点 ({x:.2f}, {y:.2f}) 位于禁区 '{fence.name}' 内",
-                    x=x,
-                    y=y,
-                    geofence=fence.name,
-                )
+        for x, y in _candidate_points(step):
+            for fence in ctx.safety.geofences:
+                if fence.contains(x, y):
+                    return PolicyDecision.deny(
+                        self.name,
+                        f"目标点 ({x:.2f}, {y:.2f}) 位于禁区 '{fence.name}' 内",
+                        x=x,
+                        y=y,
+                        geofence=fence.name,
+                    )
         return PolicyDecision.pass_(self.name)
 
 
@@ -271,6 +293,48 @@ def _extract_xy(step: PlanStep) -> tuple[float, float] | None:
         return None
     try:
         return float(x), float(y)
+    except (TypeError, ValueError):
+        return None
+
+
+def _candidate_points(step: PlanStep) -> list[tuple[float, float]]:
+    """步骤里所有需要过边界/禁区判定的点。
+
+    两个来源：步骤自身的 ``x``/``y``，以及 ``waypoints`` 这类点序列。
+    只认 ``x``/``y`` 会让 ``patrol`` 的目标点整条逃过校验——技能的参数形态
+    一旦嵌套，扁平取值就是漏检的同义词。
+    """
+    points: list[tuple[float, float]] = []
+    own = _extract_xy(step)
+    if own is not None:
+        points.append(own)
+
+    nested = step.args.get("waypoints")
+    if isinstance(nested, list):
+        for item in nested:
+            if not isinstance(item, dict):
+                continue
+            if item.get("x") is None or item.get("y") is None:
+                continue
+            try:
+                points.append((float(item["x"]), float(item["y"])))
+            except (TypeError, ValueError):
+                continue
+    return points
+
+
+def _extract_delta(step: PlanStep) -> tuple[float, float] | None:
+    """从参数里取相对位移；非位移型技能返回 None。
+
+    只认 ``dx``/``dy`` 同时出现的技能（目前是 ``move_relative``）：
+    缺一个字段说明参数本身就不完整，那是 :class:`ParamSchemaPolicy` 的职责，
+    这里补 0 反而会掩盖问题。
+    """
+    dx, dy = step.args.get("dx"), step.args.get("dy")
+    if dx is None or dy is None:
+        return None
+    try:
+        return float(dx), float(dy)
     except (TypeError, ValueError):
         return None
 

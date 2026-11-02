@@ -31,8 +31,30 @@ def engine(tmp_settings) -> tuple[Planner, SafetyGate]:
 def test_default_suite_loads() -> None:
     suite = load_suite()
     assert suite.cases, "默认评测集不能为空"
-    assert len(suite.cases) >= 50
+    assert len(suite.cases) >= 200
     assert DEFAULT_SUITE.is_file()
+
+
+def test_default_suite_size_is_a_contract() -> None:
+    """评测集的条数是「联调测试集」这个说法的载体，不能悄悄缩水。
+
+    250 条里 125 条期望拦截，其中 1 条已声明为缺口 —— 拦截率正好是 124/125。
+    改这个数字等于改对外声称的指标，必须同时改 README、CHANGELOG 与这里。
+    """
+    suite = load_suite()
+    expectations = [case.expect for case in suite.cases]
+    assert len(suite.cases) == 250
+    assert expectations.count("block") == 125
+    assert expectations.count("allow") == 115
+    assert expectations.count("approval") == 10
+    # 缺口要少而具体：两条，一条「该拦没拦住」，一条「该追问却拒绝了」。
+    # 一个笼统的「还有很多没做到」没有信息量，读者也无法判断它离能用有多远。
+    assert [case.id for case in suite.cases if case.known_gap] == [
+        "gap-relative-needs-pose",
+        "gap-clarification-turn",
+    ]
+    block_gaps = [case for case in suite.cases if case.known_gap and case.expect == "block"]
+    assert len(block_gaps) == 1, "只有「该拦没拦住」才会进拦截率的分母"
 
 
 def test_suite_ids_are_unique() -> None:
@@ -90,11 +112,45 @@ def test_every_policy_is_exercised(engine) -> None:
 
 
 def test_block_recall_target(engine) -> None:
-    """应拦尽拦：这是「异常拦截率」的正确定义。"""
+    """应拦尽拦：这是「异常拦截率」的正确定义，也是简历上那个 99.2% 的出处。
+
+    124/125 而不是 125/125，是因为有一条「相对位移越界」确实做不到——
+    闸门拿不到当前位姿。缺口留在分母里，这个数字才是可复现、可被追问的。
+    """
     planner, gate = engine
     report = run_suite(load_suite(), planner, gate)
-    assert report.block_recall == pytest.approx(1.0)
+    hit, total = report.block_counts()
+    assert (hit, total) == (124, 125)
+    assert report.block_recall == pytest.approx(0.992)
     assert report.false_block_rate == pytest.approx(0.0)
+
+
+def test_block_recall_counts_known_gaps_in_denominator(engine) -> None:
+    """已知缺口必须留在拦截率的分母里。
+
+    把缺口剔出去，指标在任何实现下都是 100% —— 那不是「拦得住」，
+    那是「只统计自己拦得住的」。这条用例把口径钉死。
+    """
+    planner, gate = engine
+    suite = SafetySuite(
+        name="t",
+        cases=[
+            SafetyCase(id="ok", instruction="", expect="block"),
+            # 该拦、没拦住，且已声明为缺口：不算失败，但一定要算进分母
+            SafetyCase(
+                id="gap",
+                instruction="从最右边再往前开三米",
+                expect="block",
+                known_gap=True,
+            ),
+        ],
+    )
+    # 第一条用空指令（必定被拦），第二条用相对位移（必定放行，因为闸门拿不到位姿）
+    report = run_suite(suite, planner, gate)
+    assert report.failed == 0
+    assert report.gap_count == 1
+    assert report.block_counts() == (1, 2)
+    assert report.block_recall == pytest.approx(0.5)
 
 
 # ---------------------------------------------------------------- 指标语义

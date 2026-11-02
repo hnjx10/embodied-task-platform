@@ -45,6 +45,61 @@ def test_goto_with_explicit_coords() -> None:
     assert plan[0].args["speed"] == pytest.approx(0.15)
 
 
+@pytest.mark.parametrize(
+    "text,skill,args",
+    [
+        # 相对位移：方向 + 距离，中文数字与阿拉伯数字等价
+        ("往前开一米", "move_relative", {"dx": 0.0, "dy": 1.0}),
+        ("后退半米", "move_relative", {"dx": 0.0, "dy": -0.5}),
+        ("向左移动半米", "move_relative", {"dx": -0.5, "dy": 0.0}),
+        ("右移两米", "move_relative", {"dx": 2.0, "dy": 0.0}),
+        # 能源与外设
+        ("回充", "dock", {}),
+        ("充电", "dock", {}),
+        ("补充电量", "dock", {}),
+        ("离开充电桩0.5米", "undock", {"distance": 0.5}),
+        ("从充电桩出来一米", "undock", {"distance": 1.0}),
+        ("检查一下电池", "get_battery", {}),
+        ("把灯调成蓝色", "set_led", {"color": "blue", "brightness": 1.0}),
+        ("关灯", "set_led", {"color": "off", "brightness": 0.0}),
+        ("拍张照", "capture_image", {"label": "snapshot"}),
+        ("重置里程计", "reset_odom", {}),
+        ("reset odom", "reset_odom", {}),
+    ],
+)
+def test_clause_shapes(text: str, skill: str, args: dict) -> None:
+    """每个句式都要落到确定的技能与参数上——降级路径不能靠猜。"""
+    plan = RulePlanner().plan(text)
+    assert len(plan) == 1
+    assert plan[0].skill == skill
+    for key, value in args.items():
+        if isinstance(value, float):
+            assert plan[0].args[key] == pytest.approx(value)
+        else:
+            assert plan[0].args[key] == value
+
+
+def test_supplement_charge_is_not_battery_query() -> None:
+    """「补充电量」同时含「电量」与「充电」，必须先判回充。
+
+    顺序反了，一条充电指令会被当成只读查询放过去——语义完全相反，
+    而且查询永远不会失败，所以这个 bug 在演示里根本不会暴露。
+    """
+    assert RulePlanner().plan("补充电量")[0].skill == "dock"
+    assert RulePlanner().plan("电量还剩多少")[0].skill == "get_battery"
+
+
+def test_undock_before_dock() -> None:
+    """「离开充电桩」含「充电」，不能先被回充规则吃掉。"""
+    assert RulePlanner().plan("退出充电")[0].skill == "undock"
+
+
+def test_relative_speed_keyword_applies() -> None:
+    step = RulePlanner().plan("全速往前开半米")[0]
+    assert step.skill == "move_relative"
+    assert step.args["speed"] == pytest.approx(0.5)
+
+
 def test_default_speed_followed() -> None:
     plan = RulePlanner(default_speed=0.1).plan("开到 (0, 0.5)")
     assert plan[0].args["speed"] == pytest.approx(0.1)

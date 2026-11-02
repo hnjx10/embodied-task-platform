@@ -24,7 +24,7 @@ sudo systemctl status robot-agent
 ### 容器
 
 ```bash
-docker build -t robot-agent:1.3.0 .
+docker build -t robot-agent:1.3.1 .
 docker compose up -d
 docker compose logs -f --tail=100
 ```
@@ -241,13 +241,13 @@ robot-agent tasks purge          # 等价于直接调用 runner.purge()
 ```bash
 # 升级
 systemctl stop robot-agent
-/opt/robot-agent/venv/bin/pip install --upgrade "robot-agent[api]==1.3.0"
+/opt/robot-agent/venv/bin/pip install --upgrade "robot-agent[api]==1.3.1"
 systemctl start robot-agent
 robot-agent doctor && curl -fsS localhost:8080/readyz | jq .status
 
 # 回滚
 systemctl stop robot-agent
-/opt/robot-agent/venv/bin/pip install --force-reinstall "robot-agent[api]==1.3.0"
+/opt/robot-agent/venv/bin/pip install --force-reinstall "robot-agent[api]==1.3.1"
 systemctl start robot-agent
 ```
 

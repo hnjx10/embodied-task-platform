@@ -298,11 +298,46 @@ def _make_nodes(c: AgentComponents, *, approval_mode: ApprovalMode = "persist") 
 
     # ---------------------------------------------------------------- verify
     def verify_node(state: GraphState) -> dict[str, Any]:
-        """对声明了 ``expect`` 的步骤做结果核验（用实测位姿，不信执行器的自述）。"""
+        """对声明了 ``expect`` 的步骤做结果核验（用实测位姿，不信执行器的自述）。
+
+        **每个观测目标只读一次**，多个步骤共享同一次读数。这不是省几条代码的问题：
+        ``get_pose`` 在真机上是一次 ROS2 service 往返，而一条指令里往往有多步
+        都盯着同一个对象（先推红块、再看红块、再摆红块）。按步骤逐个读，会为同
+        一个不变的事实反复问硬件；位姿在两次读之间如果没有变化，多读的那几次除了
+        增加时延，还会因为读数抖动让「核验结论」前后不一致。
+
+        为什么不用线程池并行读：``rclpy.spin(node)`` 是单线程执行器，另一条线程
+        发起 service 调用会和 spin 争同一个 executor，表现为偶发的 call 超时——
+        这类问题只在真机上、只在高负载时出现，用 mock 永远测不出来。真要把多路
+        观测并行起来，前提是换成 MultiThreadedExecutor 并给每条通道独立的
+        callback group，那是一次独立的、需要在硬件上验证的改动，不塞在这里。
+        """
         task_id = state["task_id"]
         checks: list[dict[str, Any]] = []
         if not c.registry.has("get_pose"):
             return {"verifications": checks}
+
+        get_pose = c.registry.get("get_pose")
+        cache: dict[str, dict[str, Any]] = {}
+
+        def observe(target: str) -> dict[str, Any]:
+            """带缓存的位姿读取；失败结果同样缓存，避免坏目标重试拖长尾延迟。"""
+            if target in cache:
+                return cache[target]
+            try:
+                result = get_pose.execute(target=target)
+            except Exception as exc:
+                cache[target] = {"ok": False, "detail": f"位姿读取失败: {exc}"}
+                return cache[target]
+            if result.ok:
+                cache[target] = {
+                    "ok": True,
+                    "x": float(result.data["x"]),
+                    "y": float(result.data["y"]),
+                }
+            else:
+                cache[target] = {"ok": False, "detail": result.detail}
+            return cache[target]
 
         for step_dict in state.get("plan", []):
             step = PlanStep.model_validate(step_dict)
@@ -310,16 +345,12 @@ def _make_nodes(c: AgentComponents, *, approval_mode: ApprovalMode = "persist") 
                 continue
             target = step.expect.get("color") or "robot"
             tolerance = float(step.expect.get("tolerance", 0.25))
-            try:
-                pose = c.registry.get("get_pose").execute(target=target)
-            except Exception as exc:
-                checks.append({"target": target, "ok": False, "detail": f"位姿读取失败: {exc}"})
+            pose = observe(target)
+            if not pose["ok"]:
+                checks.append({"target": target, "ok": False, "detail": pose["detail"]})
                 continue
-            if not pose.ok:
-                checks.append({"target": target, "ok": False, "detail": pose.detail})
-                continue
-            dx = float(pose.data["x"]) - float(step.expect.get("x", 0.0))
-            dy = float(pose.data["y"]) - float(step.expect.get("y", 0.0))
+            dx = pose["x"] - float(step.expect.get("x", 0.0))
+            dy = pose["y"] - float(step.expect.get("y", 0.0))
             distance = (dx * dx + dy * dy) ** 0.5
             ok = distance <= tolerance
             checks.append(

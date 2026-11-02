@@ -159,6 +159,14 @@ def evaluate(
     fail_under: Annotated[
         float, typer.Option("--fail-under", help="通过率低于该阈值时返回非 0（用于 CI）")
     ] = 0.0,
+    min_block_recall: Annotated[
+        float,
+        typer.Option(
+            "--min-block-recall",
+            help="拦截召回率低于该阈值时返回非 0。"
+            "单靠 --fail-under 挡不住「把拦不住的用例标成缺口」",
+        ),
+    ] = 0.0,
     log_level: Annotated[
         str | None, typer.Option("--log-level", help="默认 error，避免拦截日志刷屏")
     ] = None,
@@ -191,7 +199,13 @@ def evaluate(
     typer.echo(
         console.eval_json(report) if as_json else console.eval_report(report, verbose=verbose)
     )
-    passed = report.ok and report.pass_rate >= fail_under
+    # 两道门禁语义不同，都要有：
+    #   fail_under        —— 可评分用例有没有判错，护栏是「标注 vs 实际」
+    #   min_block_recall  —— 该拦的到底拦住了多少，护栏是「拦截率本身」
+    # 只有前者的话，把拦不住的用例逐个标成 known_gap 就能让 CI 一直绿。
+    passed = (
+        report.ok and report.pass_rate >= fail_under and report.block_recall >= min_block_recall
+    )
     raise typer.Exit(0 if passed else 1)
 
 

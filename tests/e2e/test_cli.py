@@ -41,7 +41,7 @@ def test_config_command_outputs_json(capsys: pytest.CaptureFixture[str]) -> None
 
 def test_version_command(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["version"]) == 0
-    assert "1.3.0" in capsys.readouterr().out
+    assert "1.3.1" in capsys.readouterr().out
 
 
 def test_audit_verify_without_log(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
@@ -78,3 +78,20 @@ def test_tasks_purge_json(capsys: pytest.CaptureFixture[str]) -> None:
 def test_tasks_purge_dry_run(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["tasks", "purge", "--dry-run"]) == 0
     assert "未删除" in capsys.readouterr().out
+
+
+def test_eval_gate_passes_on_default_suite(capsys: pytest.CaptureFixture[str]) -> None:
+    """默认评测集必须同时过「通过率」和「拦截召回率」两道门禁。"""
+    assert main(["eval", "--fail-under", "1.0", "--min-block-recall", "0.99"]) == 0
+    out = capsys.readouterr().out
+    assert "124/125" in out, "拦截召回率必须带分母输出，否则数字无法被核对"
+
+
+def test_eval_block_recall_gate_is_independent(capsys: pytest.CaptureFixture[str]) -> None:
+    """把阈值抬到拦截率之上时要失败。
+
+    这条用例存在的理由：只靠通过率门禁，把拦不住的用例逐个标成 known_gap 就能让 CI
+    一直绿——那等于给自己发合格证。拦截召回率必须单独设阈值。
+    """
+    assert main(["eval", "--min-block-recall", "0.995"]) == 1
+    capsys.readouterr()

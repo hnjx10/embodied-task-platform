@@ -145,3 +145,31 @@ async def test_report_contains_verification(assembly) -> None:
     assert record.verifications
     assert record.verifications[0]["ok"] is True
     assert "核验" in record.report
+
+
+async def test_verify_reads_each_target_once(assembly) -> None:
+    """同一条指令里多次核验同一个对象时，只读一次位姿。
+
+    这不是性能微调：位姿读取在真机上是一次 ROS2 service 往返，按步骤逐个读会为
+    「同一个不变的事实」反复问硬件，而且还可能因为两次读之间的抖动让核验结论
+    前后不一致。这条用例把「一次目标一次读」钉死，防止后续重构又退化回去。
+    """
+    skill = assembly.registry.get("get_pose")
+    calls: list[str] = []
+    original = skill.execute
+
+    def counting(**kwargs):
+        calls.append(str(kwargs.get("target")))
+        return original(**kwargs)
+
+    skill.execute = counting  # type: ignore[method-assign]
+    try:
+        task = await assembly.runner.submit("把红色方块推到左边，然后把红色方块推到左边")
+        record = await assembly.runner.execute(task.id)
+    finally:
+        skill.execute = original  # type: ignore[method-assign]
+
+    assert record.status == "succeeded"
+    assert len(record.verifications) == 2, "两个步骤各自要有一条核验记录"
+    assert all(v["ok"] for v in record.verifications)
+    assert calls == ["red"], f"同一目标应只读一次位姿，实际读了 {calls}"

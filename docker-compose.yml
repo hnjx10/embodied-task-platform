@@ -5,7 +5,7 @@
 services:
   robot-agent:
     build: .
-    image: robot-agent:1.3.0
+    image: robot-agent:1.3.1
     container_name: robot-agent
     restart: unless-stopped
     ports:
