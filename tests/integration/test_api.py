@@ -352,3 +352,38 @@ async def test_purge_scheduler_runs_with_lifespan(tmp_path: Path) -> None:
         assert purger._task is not None and not purger._task.done(), "清理协程应随应用启动"
 
     assert purger._task is None, "退出后必须收掉，不能留孤儿协程"
+
+
+async def test_idempotency_key_returns_same_task(client: AsyncClient) -> None:
+    head = {"Idempotency-Key": "order-42"}
+    first = await client.post("/v1/tasks", json={"instruction": "把红色方块推到左边"}, headers=head)
+    second = await client.post(
+        "/v1/tasks", json={"instruction": "把红色方块推到左边"}, headers=head
+    )
+
+    assert first.json()["id"] == second.json()["id"]
+
+
+async def test_idempotency_key_reuse_with_different_instruction(client: AsyncClient) -> None:
+    """同一个键配不同指令必须 409：静默返回旧任务会让调用方拿别人的结果当自己的。"""
+    head = {"Idempotency-Key": "order-43"}
+    await client.post("/v1/tasks", json={"instruction": "把红色方块推到左边"}, headers=head)
+
+    resp = await client.post("/v1/tasks", json={"instruction": "把绿色方块推到右边"}, headers=head)
+
+    assert resp.status_code == 409
+    error = resp.json()["error"]
+    assert error["code"] == "task_conflict"
+    assert error["details"]["existing_instruction"] == "把红色方块推到左边"
+
+
+async def test_idempotency_ignores_wrapping_whitespace(client: AsyncClient) -> None:
+    """只是排版差异，不该被当成另一条指令。"""
+    first = await client.post(
+        "/v1/tasks", json={"instruction": "把红色方块推到左边", "idempotency_key": "k-1"}
+    )
+    second = await client.post(
+        "/v1/tasks", json={"instruction": "  把红色方块推到左边 ", "idempotency_key": "k-1"}
+    )
+
+    assert first.json()["id"] == second.json()["id"]

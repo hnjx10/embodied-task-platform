@@ -33,6 +33,11 @@ from robot_agent.storage.base import TaskRepository
 logger = get_logger(__name__)
 
 
+def _normalize_instruction(text: str) -> str:
+    """幂等比较时忽略首尾与连续空白：仅排版差异不该算「另一条指令」。"""
+    return " ".join(text.split())
+
+
 class TaskRunner:
     """任务生命周期管理。"""
 
@@ -72,6 +77,19 @@ class TaskRunner:
         if idempotency_key:
             existing = await self.repo.find_by_idempotency_key(idempotency_key)
             if existing is not None:
+                if _normalize_instruction(existing.instruction) != _normalize_instruction(
+                    instruction
+                ):
+                    # 同一个键配不同指令，是客户端 bug 或键复用事故。
+                    # 静默返回旧任务会让调用方拿着别人的执行结果当自己的。
+                    raise TaskConflictError(
+                        f"幂等键 {idempotency_key} 已被另一条指令占用",
+                        details={
+                            "idempotency_key": idempotency_key,
+                            "existing_task_id": existing.id,
+                            "existing_instruction": existing.instruction,
+                        },
+                    )
                 logger.info("task_idempotent_hit", task_id=existing.id, key=idempotency_key)
                 return existing
 

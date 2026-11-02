@@ -35,9 +35,13 @@ token 比较使用 `secrets.compare_digest`，避免时序侧信道。
 |---|---|---|
 | `instruction` | string | 必填，1–500 字符 |
 | `wait` | bool | `true` 同步等到终态（受 `api.request_timeout_s` 限制）；默认 `false` 立即返回 202 |
-| `idempotency_key` | string? | 幂等键，相同键不会重复执行 |
+| `idempotency_key` | string? | 幂等键：同键同指令返回原任务，**同键不同指令返回 409** |
 
 幂等键也可放在请求头：`Idempotency-Key: order-...`
+
+幂等的语义是「重复提交安全」，不是「键可以复用」：同一个键配了**另一条指令**时返回
+`409 task_conflict`（`details` 里带原指令），而不是把别人的任务结果返回给你。
+比较时忽略首尾与连续空白——排版差异不算另一条指令。
 
 **响应 202**
 
