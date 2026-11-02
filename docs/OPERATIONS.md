@@ -24,7 +24,7 @@ sudo systemctl status robot-agent
 ### 容器
 
 ```bash
-docker build -t robot-agent:1.0.0 .
+docker build -t robot-agent:1.1.0 .
 docker compose up -d
 docker compose logs -f --tail=100
 ```
@@ -247,7 +247,7 @@ robot-agent doctor && curl -fsS localhost:8080/readyz | jq .status
 
 # 回滚
 systemctl stop robot-agent
-/opt/robot-agent/venv/bin/pip install --force-reinstall "robot-agent[api]==1.0.0"
+/opt/robot-agent/venv/bin/pip install --force-reinstall "robot-agent[api]==1.1.0"
 systemctl start robot-agent
 ```
 
