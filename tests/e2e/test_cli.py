@@ -65,3 +65,16 @@ def test_estop_exit_zero_and_audited(capsys: pytest.CaptureFixture[str], tmp_pat
 
     entries = tail_entries(tmp_path / "audit.jsonl", limit=5)
     assert any(e.get("event") == "emergency_stop" for e in entries)
+
+
+def test_tasks_purge_json(capsys: pytest.CaptureFixture[str]) -> None:
+    """手动清理入口：只清终态，空库应返回 0 条且可被脚本消费。"""
+    assert main(["tasks", "purge", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["retention_hours"] >= 1
+    assert payload["count"] == 0
+
+
+def test_tasks_purge_dry_run(capsys: pytest.CaptureFixture[str]) -> None:
+    assert main(["tasks", "purge", "--dry-run"]) == 0
+    assert "未删除" in capsys.readouterr().out

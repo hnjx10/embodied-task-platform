@@ -160,6 +160,9 @@ class StorageSettings(BaseModel):
 
     url: str = Field(default="memory", description="memory | sqlite:////abs/path/tasks.db")
     retention_hours: int = Field(default=72, ge=1)
+    purge_interval_s: float = Field(
+        default=1800.0, gt=0.0, description="过期任务清理周期；配了保留期就必须真的执行"
+    )
 
     @property
     def is_sqlite(self) -> bool:

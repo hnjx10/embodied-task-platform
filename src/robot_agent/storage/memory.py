@@ -70,7 +70,10 @@ class InMemoryTaskRepository:
     async def purge_expired(self, retention_hours: int) -> int:
         cutoff = datetime.now(timezone.utc) - timedelta(hours=retention_hours)
         async with self._lock:
-            expired = [tid for tid, t in self._tasks.items() if t.created_at < cutoff]
+            # 只清终态：未完成的任务是排障线索，不能当成过期垃圾
+            expired = [
+                tid for tid, t in self._tasks.items() if t.is_terminal and t.created_at < cutoff
+            ]
             for tid in expired:
                 self._tasks.pop(tid, None)
         return len(expired)

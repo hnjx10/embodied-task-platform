@@ -54,8 +54,11 @@ audit:
 storage:
   url: sqlite:////var/lib/robot-agent/tasks.db
   retention_hours: 720
+  purge_interval_s: 600
 
 api:
+  max_request_bytes: 65536
+  max_sse_subscribers: 32
   host: 0.0.0.0
   port: 8080
   max_concurrent_tasks: 1

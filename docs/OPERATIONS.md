@@ -213,6 +213,25 @@ ROBOT_AGENT_AUDIT__PATH=/var/lib/robot-agent/audit/$(hostname).jsonl
 
 恢复：停服务 → 覆盖文件 → 启服务 → `robot-agent audit verify`。
 
+### 任务库保留期
+
+`storage.retention_hours` 由进程内的 `PurgeScheduler` 周期性执行，周期是
+`storage.purge_interval_s`（默认 1800 秒，生产配置 600 秒）。它随 lifespan 起停，
+所以 **只有 `robot-agent serve` 在跑时才会清理**——用 `robot-agent run` 单次执行不会触发。
+
+```bash
+# 确认清理真的在发生
+grep -o '"event": "purge_done"[^}]*' /var/log/robot-agent/service.log | tail
+# 手动触发一轮（不想等周期）
+robot-agent tasks purge          # 等价于直接调用 runner.purge()
+```
+
+清理失败（例如 SQLite 被别的进程长时间锁住）只记 `purge_failed` 告警，不中断后续轮次；
+但连续多轮失败会让库持续膨胀，应查 `df -h` 与锁竞争。
+
+`purge_expired` 只删**终态且已过保留期**的任务；`running` / `awaiting_approval` 永远不会被清掉——
+半成品记录是排障线索，不能当成垃圾。
+
 > 不要用 `cp` 拷正在写的 SQLite 文件，WAL 模式下会得到不一致快照。
 
 ---

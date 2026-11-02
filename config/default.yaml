@@ -66,8 +66,11 @@ audit:
 storage:
   url: memory
   retention_hours: 72
+  purge_interval_s: 1800    # 过期清理周期；配了保留期就会真的执行
 
 api:
+  max_request_bytes: 65536   # 超限 413；不信 Content-Length，chunked 也会被计数
+  max_sse_subscribers: 32    # 单任务 SSE 订阅上限，超限 429
   host: 127.0.0.1
   port: 8080
   auth_token: null

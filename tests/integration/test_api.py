@@ -339,3 +339,16 @@ async def test_emergency_stop_reports_missing_skill(
 
     assert resp.status_code == 503
     assert resp.json()["error"]["code"] == "executor_unavailable"
+
+
+async def test_purge_scheduler_runs_with_lifespan(tmp_path: Path) -> None:
+    """保留期配置必须真的被执行：lifespan 启动清理协程，退出时收掉。"""
+    from robot_agent.api.app import create_app
+
+    app = create_app(make_settings(tmp_path))
+    async with app.router.lifespan_context(app):
+        purger = app.state.assembly.purger
+        assert purger is not None
+        assert purger._task is not None and not purger._task.done(), "清理协程应随应用启动"
+
+    assert purger._task is None, "退出后必须收掉，不能留孤儿协程"

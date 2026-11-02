@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from datetime import timedelta
 from pathlib import Path
 from typing import Annotated, Any
 
@@ -24,6 +25,7 @@ from robot_agent.audit import tail_entries
 from robot_agent.config import Settings, load_settings
 from robot_agent.errors import ExecutorUnavailableError, RobotAgentError
 from robot_agent.logging import configure_logging, request_context
+from robot_agent.orchestration.state import utcnow
 from robot_agent.version import __version__
 
 app = typer.Typer(
@@ -199,6 +201,40 @@ def tasks_list(
             f"{r.id:<26} {r.status:<18} {r.created_at.isoformat(timespec='seconds'):<26} "
             f"{r.instruction[:40]}"
         )
+
+
+@tasks_app.command("purge")
+def tasks_purge(
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="只统计不删除")] = False,
+    as_json: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """按保留期清理过期任务（只清终态）。服务运行时的周期清理不受此命令影响。"""
+    settings = _settings(json_logs=False)
+    retention = settings.storage.retention_hours
+
+    async def _purge() -> int:
+        from robot_agent.storage.sqlite import SqliteTaskRepository, build_repository
+
+        repo = build_repository(settings.storage.url)
+        if isinstance(repo, SqliteTaskRepository):
+            await repo.init()
+        try:
+            if dry_run:
+                cutoff = utcnow() - timedelta(hours=retention)
+                expired = await repo.list(status=None, limit=1000)
+                return sum(1 for r in expired if r.is_terminal and r.created_at < cutoff)
+            return await repo.purge_expired(retention)
+        finally:
+            await repo.close()
+
+    count = asyncio.run(_purge())
+    payload = {"retention_hours": retention, "dry_run": dry_run, "count": count}
+    if as_json:
+        typer.echo(json.dumps(payload, ensure_ascii=False))
+    elif dry_run:
+        typer.echo(f"将清理 {count} 条过期任务（保留 {retention} 小时，未删除）")
+    else:
+        typer.echo(f"已清理 {count} 条过期任务（保留 {retention} 小时）")
 
 
 async def _list_tasks(settings: Settings, status: str | None, limit: int) -> list[Any]:

@@ -37,11 +37,14 @@
 - **事件总线资源边界**：单任务 SSE 订阅数上限（默认 32，超限 429 `too_many_subscribers`）；
   「已结束任务」集合改为定长环形缓冲（原先只写不读，跑久了就是一张永不释放的表）；
   任务结束后才订阅的客户端立刻收到结束哨兵，不再白等。
+- **过期清理真正被执行**：`PurgeScheduler` 随应用 lifespan 起停，按
+  `storage.purge_interval_s`（默认 30 分钟）调用 `retention_hours` 清理。
+  此前该配置只写在文档里没人调用，数据库实际会无限增长；单轮失败只记日志，不中断后续轮次。
 - **容器化**：多阶段 Dockerfile（非 root、只读根文件系统、HEALTHCHECK）、docker-compose。
 - **部署清单**：systemd unit（加固项齐全）、K8s Deployment/Service/PVC/ServiceMonitor。
 - **文档**：API 参考、架构说明（含失败隔离矩阵）、运维 Runbook（故障决策树 + 告警阈值）、
   两份 ADR（fail-closed、状态 CAS）、SECURITY 信任边界、CONTRIBUTING 扩展指南。
-- **测试**：194 个用例，覆盖策略边界、fail-closed、CAS 并发、哈希链篡改、CLI 退出码、
+- **测试**：204 个用例，覆盖策略边界、fail-closed、CAS 并发、哈希链篡改、CLI 退出码、
   LLM 重试/熔断/降级、HTTP 接口与 SSE、优雅关闭。
 - **质量门禁**：ruff（含 bandit/async/bugbear 规则）+ ruff format + mypy + GitHub Actions
   （3.10/3.11/3.12 矩阵、ROS 降级导入检查、镜像构建与容器冒烟）。
@@ -64,6 +67,8 @@
 
 ### Fixed
 
+- **过期清理会误删未完成任务**：`purge_expired` 原来只按 `created_at` 判断，超过保留期的 `awaiting_approval` / `running` 任务会连同待办一起消失。现在只清终态。
+- **`retention_hours` 从未被真正执行**：新增 `PurgeScheduler` 与 `robot-agent tasks purge`。
 - **CI 三处失败**（44cefd7）：`typer` 未声明为依赖导致测试环境 collection 失败；
   `tests/unit/test_storage.py` 仍用 3.11+ 的 `datetime.UTC`；无 `prometheus-client` 时
   no-op 桩不吞构造参数，`Counter(...)` 直接 `TypeError` 把 mock 模式拖死。

@@ -19,6 +19,7 @@ from robot_agent.logging import get_logger
 from robot_agent.orchestration.events import EventBus
 from robot_agent.orchestration.executor import StepExecutor
 from robot_agent.orchestration.graph import AgentComponents, build_graph, build_resume_graph
+from robot_agent.orchestration.maintenance import PurgeScheduler
 from robot_agent.orchestration.runner import TaskRunner
 from robot_agent.planner.pipeline import Planner
 from robot_agent.safety.gate import SafetyGate
@@ -40,6 +41,7 @@ class Assembly:
     repository: TaskRepository
     components: AgentComponents
     runner: TaskRunner
+    purger: PurgeScheduler | None = None
     backend_handle: Any = None
     _closers: list[Callable[[], Any]] = field(default_factory=list, repr=False)
 
@@ -124,8 +126,15 @@ async def build_assembly(settings: Settings, *, force_rules: bool = False) -> As
         resume_graph=build_resume_graph(components),
         executor=executor,
     )
+    purger = PurgeScheduler(runner, settings.storage.purge_interval_s)
 
-    closers: list[Callable[[], Any]] = [executor.close, repository.close, backend_close]
+    # 逆序释放：清理协程必须先停，否则它会去用一个已经关掉的数据库
+    closers: list[Callable[[], Any]] = [
+        executor.close,
+        repository.close,
+        backend_close,
+        purger.stop,
+    ]
 
     return Assembly(
         settings=settings,
@@ -135,6 +144,7 @@ async def build_assembly(settings: Settings, *, force_rules: bool = False) -> As
         repository=repository,  # type: ignore[arg-type]
         components=components,
         runner=runner,
+        purger=purger,
         backend_handle=backend_handle,
         _closers=closers,
     )

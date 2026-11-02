@@ -17,7 +17,7 @@ import aiosqlite
 
 from robot_agent.errors import StorageError, TaskNotFoundError
 from robot_agent.logging import get_logger
-from robot_agent.orchestration.state import TaskRecord
+from robot_agent.orchestration.state import TERMINAL_STATUSES, TaskRecord
 from robot_agent.storage.base import TaskRepository
 
 logger = get_logger(__name__)
@@ -173,9 +173,16 @@ class SqliteTaskRepository:
 
     async def purge_expired(self, retention_hours: int) -> int:
         cutoff = (datetime.now(timezone.utc) - timedelta(hours=retention_hours)).isoformat()
+        # 只清终态：删掉 awaiting_approval 等于把待人工决策的记录藏起来，
+        # 删掉 running 等于在机器人还在动的时候销毁现场。
+        placeholders = ", ".join("?" * len(TERMINAL_STATUSES))
+        params = (cutoff, *sorted(TERMINAL_STATUSES))
         async with self._lock:
             db = self._conn()
-            cur = await db.execute("DELETE FROM tasks WHERE created_at < ?", (cutoff,))
+            cur = await db.execute(
+                f"DELETE FROM tasks WHERE created_at < ? AND status IN ({placeholders})",  # noqa: S608 - 占位符由常量长度生成
+                params,
+            )
             await db.commit()
             deleted = cur.rowcount or 0
         if deleted:

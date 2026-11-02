@@ -212,6 +212,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         app.state.runner = assembly.runner
         app.state.registry = assembly.registry
         app.state.events = assembly.events
+        if assembly.purger is not None:
+            await assembly.purger.start()
         logger.info(
             "api_started",
             version=__version__,

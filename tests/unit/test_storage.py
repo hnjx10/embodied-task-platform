@@ -108,15 +108,20 @@ async def test_save_missing_task_raises(repo) -> None:
     assert True
 
 
-async def test_purge_expired(repo) -> None:
-    old = TaskRecord(
-        instruction="old", created_at=datetime.now(timezone.utc) - timedelta(hours=100)
-    )
-    await repo.create(old)
-    await repo.create(TaskRecord(instruction="new"))
+async def test_purge_expired_only_terminal(repo) -> None:
+    """只清终态：待审批/执行中的老任务不是垃圾，是排障线索与待办。"""
+    long_ago = datetime.now(timezone.utc) - timedelta(hours=100)
+    old_done = TaskRecord(instruction="old", status="succeeded", created_at=long_ago)
+    old_pending = TaskRecord(instruction="pending", status="awaiting_approval", created_at=long_ago)
+    await repo.create(old_done)
+    await repo.create(old_pending)
+    await repo.create(TaskRecord(instruction="new", status="succeeded"))
+
     deleted = await repo.purge_expired(retention_hours=72)
+
     assert deleted == 1
-    assert await repo.get(old.id) is None
+    assert await repo.get(old_done.id) is None
+    assert await repo.get(old_pending.id) is not None
 
 
 def test_build_repository_memory() -> None:
