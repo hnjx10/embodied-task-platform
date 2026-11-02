@@ -18,6 +18,12 @@
   同时删除死代码 `runner.run_once`（唯一一处把组合根反向 import 进编排层的地方）。
   `planner` 与 `orchestration` 的公开导出保持不变，调用方无需改动。
 
+### Changed（编排层单一职责）
+
+- **报告渲染移出状态机**：`graph.py` 里 40 行的 `_render_report` 抽成 `reporting.py` 的纯函数。
+  改一句文案不再需要跑一遍 LangGraph，四种分支（成功/拦截/待审批/规划失败）也能单独测。
+  同时修正报告里的步骤序号从 0 起——给值班的人看「第 0 步」像是 bug。
+
 ### Changed（交付层单一职责）
 
 - **CLI 拆出渲染层** `console.py`：表格、JSON、错误行、审计列表等纯字符串函数从命令函数里移出，
@@ -79,7 +85,7 @@
 - **部署清单**：systemd unit（加固项齐全）、K8s Deployment/Service/PVC/ServiceMonitor。
 - **文档**：API 参考、架构说明（含失败隔离矩阵）、运维 Runbook（故障决策树 + 告警阈值）、
   两份 ADR（fail-closed、状态 CAS）、SECURITY 信任边界、CONTRIBUTING 扩展指南。
-- **测试**：244 个用例，覆盖策略边界、fail-closed、CAS 并发、哈希链篡改、CLI 退出码、
+- **测试**：253 个用例，覆盖策略边界、fail-closed、CAS 并发、哈希链篡改、CLI 退出码、
   LLM 重试/熔断/降级、HTTP 接口与 SSE、优雅关闭。
 - **质量门禁**：ruff（含 bandit/async/bugbear 规则）+ ruff format + mypy + GitHub Actions
   （3.10/3.11/3.12 矩阵、ROS 降级导入检查、镜像构建与容器冒烟）。

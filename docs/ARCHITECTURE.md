@@ -9,7 +9,7 @@
                      graph │ runner │ executor │ events │ maintenance
  L3  领域服务      planner/ │ safety/               ← 把能力编排成决策
  L2  能力层        skills/ │ storage/                ← 真正干活：驱动执行器、落库
- L1  领域模型      domain/                           ← 纯数据契约：Plan / TaskRecord
+ L1  领域模型      domain/ │ reporting.py            ← 纯数据契约 + 纯函数渲染
  L0  基础设施      config │ logging │ metrics │ audit │ errors │ version
 ```
 

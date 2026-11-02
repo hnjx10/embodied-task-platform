@@ -32,8 +32,9 @@ LAYER_RANK: dict[str, int] = {
     "robot_agent.config": 0,
     "robot_agent.metrics": 0,
     "robot_agent.audit": 0,
-    # L1 领域模型：纯数据契约
+    # L1 领域模型与纯函数（无外部依赖）
     "robot_agent.domain": 1,
+    "robot_agent.reporting": 1,
     # L2 能力层：干活的东西（执行器 / 持久化）
     "robot_agent.skills": 2,
     "robot_agent.storage": 2,

@@ -30,6 +30,7 @@ from robot_agent.errors import RobotAgentError
 from robot_agent.logging import get_logger
 from robot_agent.orchestration.executor import StepExecutor
 from robot_agent.planner.pipeline import Planner
+from robot_agent.reporting import render_report
 from robot_agent.safety.gate import SafetyGate
 from robot_agent.skills.base import SkillRegistry
 
@@ -226,7 +227,19 @@ def _make_nodes(c: AgentComponents) -> dict[str, Any]:
     # ---------------------------------------------------------------- report
     def report_node(state: GraphState) -> dict[str, Any]:
         task_id = state["task_id"]
-        report = _render_report(state)
+        report = render_report(
+            task_id=task_id,
+            instruction=state.get("instruction", ""),
+            status=state.get("status", ""),
+            plan_source=state.get("plan_source", "-"),
+            step_count=len(state.get("plan", [])),
+            outcomes=list(state.get("outcomes", [])),
+            verifications=list(state.get("verifications", [])),
+            corrections=list(state.get("corrections", [])),
+            block_reason=state.get("block_reason", ""),
+            approval_reasons=list(state.get("approval_reasons", [])),
+            error=state.get("error"),
+        )
         audit.record("reported", {"report": report, "status": state.get("status")}, task_id=task_id)
         return {"report": report}
 
@@ -301,52 +314,6 @@ def _route_after_screen(state: GraphState) -> str:
     if status == "awaiting_approval":
         return "end"
     return "execute"
-
-
-# --------------------------------------------------------------------- 报告
-
-
-def _render_report(state: GraphState) -> str:
-    status = state.get("status", "")
-    lines: list[str] = [
-        f"任务: {state.get('task_id', '-')}",
-        f"指令: {state.get('instruction', '')}",
-        f"规划来源: {state.get('plan_source', '-')}｜步数: {len(state.get('plan', []))}",
-    ]
-    if status == "awaiting_approval":
-        reasons = "; ".join(state.get("approval_reasons", []))
-        lines.append(f"状态: 等待人工审批（{reasons}）")
-        return "\n".join(lines)
-    if status == "blocked":
-        lines.append(f"状态: 已拦截 — {state.get('block_reason', '')}")
-        return "\n".join(lines)
-    if state.get("error"):
-        lines.append(f"状态: 规划失败 — {(state.get('error') or {}).get('message', '')}")
-        return "\n".join(lines)
-
-    for outcome in state.get("outcomes", []):
-        mark = "PASS" if outcome["outcome"] == "ok" else outcome["outcome"].upper()
-        lines.append(
-            f"  [{mark}] {outcome['index']}.{outcome['skill']} "
-            f"({outcome['latency_ms']:.0f}ms, {outcome.get('attempts', 1)} 次): {outcome['detail']}"
-        )
-    for check in state.get("verifications", []):
-        mark = "PASS" if check["ok"] else "FAIL"
-        lines.append(f"  [{mark}] 核验 {check.get('target')}: {check.get('detail')}")
-
-    corrections = state.get("corrections", [])
-    if corrections:
-        lines.append(f"安全修正: {len(corrections)} 处（详见审计日志）")
-
-    outcomes = state.get("outcomes", [])
-    checks = state.get("verifications", [])
-    all_ok = bool(outcomes) and all(o["outcome"] == "ok" for o in outcomes)
-    verify_ok = all(ch["ok"] for ch in checks) if checks else True
-    if all_ok and verify_ok:
-        lines.append("结论: 任务成功")
-    else:
-        lines.append("结论: 任务未完成（存在失败步骤或核验未通过）")
-    return "\n".join(lines)
 
 
 def record_task_metrics(status: str, duration_s: float) -> None:
