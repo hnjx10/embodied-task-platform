@@ -115,6 +115,7 @@ src/robot_agent/
 ├── cli.py                 # 命令行：run / serve / tasks / audit / doctor
 ├── console.py             # 终端渲染（按显示宽度对齐，纯函数，无副作用）
 ├── reporting.py           # 任务报告渲染（纯函数，四个分支各自提前返回）
+├── reporting.py           # 任务报告渲染（纯函数，四个分支各自提前返回）
 ├── factory.py             # 对象图装配（CLI、API、测试共用同一套）
 ├── config.py              # pydantic-settings 分层配置 + 生产护栏
 ├── errors.py              # 异常层级：code / http_status / retryable
