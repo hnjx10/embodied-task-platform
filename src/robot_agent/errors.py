@@ -190,3 +190,16 @@ class TooManySubscribersError(RobotAgentError):
     code = "too_many_subscribers"
     http_status = 429
     retryable = True
+
+
+# -------------------------------------------------------------------- 评测
+
+
+class EvaluationError(RobotAgentError):
+    """评测集本身有问题（文件缺失、字段非法、用例重复）。
+
+    刻意与「用例未通过」区分：数据集坏了是工程错误，用例如实失败是正常结果。
+    """
+
+    code = "evaluation_error"
+    http_status = 500

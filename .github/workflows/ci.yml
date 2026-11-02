@@ -35,6 +35,32 @@ jobs:
       - name: Mypy
         run: mypy src
 
+  safety-eval:
+    # 「拦得住」必须每次提交重新证明一遍。这个 job 不装 ROS、不装 Gazebo，
+    # 几毫秒就跑完，但它把「策略链有没有被改坏」钉在 CI 上——改一条策略顺序、
+    # 调一个默认配置，本地没人会记得重跑评测集。
+    name: 安全评测
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: 安装依赖
+        run: pip install -e ".[dev]"
+      - name: 跑评测集（意外失败或有未覆盖策略则中断）
+        run: robot-agent eval --fail-under 1.0
+      - name: 导出机读指标
+        if: always()
+        run: robot-agent eval --json > safety-eval.json || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: safety-eval
+          path: safety-eval.json
+          if-no-files-found: ignore
+
   test:
     name: 测试 (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
@@ -148,6 +174,7 @@ jobs:
               "robot_agent.planner.pipeline",
               "robot_agent.safety.gate",
               "robot_agent.orchestration.runner",
+              "robot_agent.evaluation",
               "robot_agent.skills.mock",
               "robot_agent.skills.ros2",
               "robot_agent.storage.sqlite",

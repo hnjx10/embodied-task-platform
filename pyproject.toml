@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "robot-agent"
-version = "1.1.0"
+version = "1.2.0"
 description = "LLM-driven task orchestration for ROS2 / Gazebo robots, with a policy-based safety gate, hash-chained audit trail and an HTTP control plane."
 readme = "README.md"
 requires-python = ">=3.10"

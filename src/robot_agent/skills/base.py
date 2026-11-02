@@ -72,12 +72,16 @@ class Skill(ABC):
     # ------------------------------------------------------------------ 对外
 
     def execute(self, **kwargs: Any) -> SkillResult:
-        """唯一外部入口：校验 → 计时 → 执行 → 异常归一化。"""
-        if kwargs:
-            self.validate_params(kwargs)
+        """唯一外部入口：校验 → 计时 → 执行 → 异常归一化。
+
+        注意把**校验后的对象**传给 :meth:`run`，而不是原始 kwargs：否则声明为
+        ``list[GotoParams]`` 的参数实际收到的是 ``list[dict]``，类型标注变成一句空话，
+        嵌套模型在技能实现里全部退化成字典访问（这个问题在 ``patrol`` 上真实发生过）。
+        """
+        payload: dict[str, Any] = dict(self.validate_params(kwargs)) if kwargs else {}
         started = time.perf_counter()
         try:
-            result = self.run(**kwargs)
+            result = self.run(**payload)
         except SkillExecutionError:
             raise
         except Exception as exc:

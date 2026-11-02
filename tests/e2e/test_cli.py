@@ -41,7 +41,7 @@ def test_config_command_outputs_json(capsys: pytest.CaptureFixture[str]) -> None
 
 def test_version_command(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["version"]) == 0
-    assert "1.1.0" in capsys.readouterr().out
+    assert "1.2.0" in capsys.readouterr().out
 
 
 def test_audit_verify_without_log(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:

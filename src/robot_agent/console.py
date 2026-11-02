@@ -17,6 +17,7 @@ from unicodedata import east_asian_width
 
 from robot_agent.domain.state import TaskRecord
 from robot_agent.errors import RobotAgentError
+from robot_agent.evaluation.runner import SuiteReport
 
 #: 中文字符在等宽字体里占两列，直接 ``len()`` 对齐会歪。
 _WIDE = {"W", "F"}
@@ -128,6 +129,102 @@ def audit_table(entries: list[dict[str, Any]], *, path: str = "") -> str:
             f"{pad(str(entry.get('task_id') or '-'), 24)} {truncate(data, 100)}"
         )
     return "\n".join(lines)
+
+
+# ------------------------------------------------------------------ 评测
+
+
+def eval_report(report: SuiteReport, *, verbose: bool = False) -> str:
+    """安全评测结果。
+
+    版面按「面试官/评审者会怎么读」排：先给三档计数（通过 / 已知缺口 / 意外失败），
+    再给三个比率（召回 / 精确 / 误拦），最后才是明细。比率一定带分母——
+    只写「拦截率 100%」而不给分母，等于什么都没说。
+    """
+    graded = [r for r in report.results if not r.known_gap]
+    block_total = sum(1 for r in graded if r.expected == "block")
+    block_hit = sum(1 for r in graded if r.expected == "block" and r.observed == "block")
+    allow_total = sum(1 for r in graded if r.expected == "allow")
+    allow_hit = sum(1 for r in graded if r.expected == "allow" and r.observed == "allow")
+    approval_total = sum(1 for r in graded if r.expected == "approval")
+    approval_hit = sum(1 for r in graded if r.expected == "approval" and r.observed == "approval")
+
+    lines = [
+        f"安全评测 · {report.suite_name}",
+        f"用例 {report.total} 条 / {len(report.category_stats())} 类 · "
+        f"耗时 {report.duration_ms:.1f}ms",
+        "",
+        f"  通过 {report.passed}    "
+        f"已知缺口 {report.gap_count}    "
+        f"意外失败 {report.failed}    "
+        f"通过率 {report.pass_rate:.1%}",
+        "",
+    ]
+
+    for label, value, hit, total in (
+        ("拦截召回率", report.block_recall, block_hit, block_total),
+        ("误拦率", report.false_block_rate, allow_total - allow_hit, allow_total),
+        ("审批召回率", report.approval_recall, approval_hit, approval_total),
+    ):
+        numerator = allow_total - allow_hit if label == "误拦率" else hit
+        lines.append(
+            f"  {pad(label, 12)} {value:>6.1%}   {numerator}/{total}"
+            if total
+            else f"  {pad(label, 12)} {'—':>6}   未覆盖"
+        )
+    lines.append(f"  {pad('参数修正', 12)} {report.corrections:>6} 次")
+    lines.append("")
+
+    stats = [s for s in report.category_stats() if s.category != "known_gap"]
+    if stats:
+        lines.append("类别明细（通过率升序）")
+        for stat in stats:
+            lines.append(
+                f"  {pad(stat.category, 22)} {stat.passed:>3}/{stat.total:<3} "
+                f"{stat.pass_rate:>6.1%}"
+            )
+        lines.append("")
+
+    histogram = report.policy_histogram()
+    names = list(report.known_policies)
+    names += [name for name in histogram if name not in names]
+    if names:
+        uncovered = [name for name in names if not histogram.get(name)]
+        lines.append(f"策略触发分布（{len(names) - len(uncovered)}/{len(names)} 条策略被用例覆盖）")
+        for name in names:
+            count = histogram.get(name, 0)
+            mark = "" if count else "  ← 无用例覆盖"
+            lines.append(f"  {pad(name, 22)} {count:>3}{mark}")
+        lines.append("")
+
+    gaps = report.gaps()
+    if gaps:
+        lines.append("已知缺口（当前实现明确未覆盖，不计入失败）")
+        for gap in gaps:
+            lines.append(f"  {pad(gap.case_id, 26)} {truncate(gap.input_text, 46)}")
+        lines.append("")
+
+    failures = report.failures()
+    if failures:
+        lines.append(f"意外失败 {len(failures)} 条")
+        for failure in failures:
+            lines.append(
+                f"  {pad(failure.case_id, 26)} 期望 {failure.expected}，实际 {failure.observed}"
+            )
+            if verbose:
+                lines.append(f"    输入: {failure.input_text}")
+                lines.append(f"    策略: {failure.policy or '-'}｜原因: {failure.reason or '-'}")
+        lines.append("")
+
+    if report.ok:
+        lines.append("结论: 未出现意外失败")
+    else:
+        lines.append(f"结论: {report.failed} 条用例的实际行为与标注不符，需修复或重新标注")
+    return "\n".join(lines).rstrip()
+
+
+def eval_json(report: SuiteReport, *, indent: int = 2) -> str:
+    return json.dumps(report.to_dict(), ensure_ascii=False, indent=indent)
 
 
 # ------------------------------------------------------------------ 错误

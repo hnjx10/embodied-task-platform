@@ -5,7 +5,7 @@
 ```
  L6  交付层        cli.py │ console.py │ api/       ← 参数解析、协议转换、输出渲染
  L5  组合根        factory.py                       ← 唯一知道所有具体实现的地方
- L4  编排层        orchestration/                   ← 一次任务的生命周期
+ L4  编排层        orchestration/ │ evaluation/      ← 单任务生命周期 / 批量安全评测
                      graph │ runner │ executor │ events │ maintenance
  L3  领域服务      planner/ │ safety/               ← 把能力编排成决策
  L2  能力层        skills/ │ storage/                ← 真正干活：驱动执行器、落库
@@ -14,7 +14,12 @@
 ```
 
 **依赖只向下**。同层之间不互相 import：`planner` 不认识 `safety`，`skills` 不认识
-`storage`，它们共同依赖的只有 `domain` 里的契约对象。
+`storage`，`orchestration` 不认识 `evaluation`——评估层只复用规划与安全的公开接口，
+不碰任务状态机；反过来编排层也不该知道自己会被评测。
+
+`evaluation/` 放在 L4 而不是 L3：它不是「一道决策」，而是「把一批决策跑一遍并统计」，
+依赖面（planner + safety + skills 的注册表）比单个领域服务宽，但不需要 L5 的装配能力——
+具体用哪个执行器、哪份配置由调用方（CLI）注入。
 
 为什么 `domain/` 要单独成层：`PlanStep` 同时被规划、安全、编排、存储四方使用。
 如果它长在 `planner/` 里，其它三层就得反向依赖规划层——这正是一个包变成

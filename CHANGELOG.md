@@ -2,6 +2,62 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [1.2.0] - 2026-11-02
+
+主题：**把「拦得住」变成可执行、可复现、能被 CI 门禁的证据。**
+
+### Added
+
+- **安全评测集与 `robot-agent eval`**（`evaluation/`，L4）：82 条标注用例、18 个类别，
+  覆盖越界、禁区、超速降速、危险表述、不可解析输入、部分解析、空输入、步数上限、
+  边界语义，以及 LLM 幻觉产生的两类非法计划（不存在的技能名、枚举外的参数）。
+  输出拦截召回率、误拦率、审批召回率、混淆矩阵与策略触发分布，`--json` 供 CI 消费。
+  评测只做「规划 + 安全判定」，不执行技能，因此不需要 ROS/Gazebo，4 毫秒跑完。
+
+  **为什么值得单独做一层**：`拦截率 99.2%` 这类数字，如果没有可复现的评测集，
+  在技术评审里等同于没有。有了它，数字才有分母、有口径、有失败明细。
+
+- **`known_gap` 用例语义**：期望放行、当前实现做不到的用例单独计数，不计入失败。
+  三条缺口（相对位移、最近物体选择、模糊目标澄清）连同「为什么做不到、打算怎么补」
+  一起写进数据集——一个从不失败的评测集，只说明出题的人只会出自己会做的题。
+
+- **`ParamSchemaPolicy`**（第 7 条策略）：把技能参数校验从 `Skill.execute` 前移到闸门。
+  非法计划不再变成任务记录，审计里留下的是「安全拒绝」而不是「执行异常」。
+  这条策略是被评测集发现的：`invalid-color` 与 `invalid-missing-arg` 两条用例最初
+  被判为「放行」，暴露出参数校验原本漏到了执行末端。
+
+- **技能库从 4 个扩到 15 个**：新增 `move_relative` / `rotate` / `look_at` / `patrol` /
+  `pick_cube` / `place_cube` / `open_gripper` / `close_gripper` / `report_status` /
+  `wait` / `set_speed`。mock 与 ROS2 双后端实现同一组名字与参数，由
+  `test_mock_and_ros2_share_skill_names` 守住一致性。
+
+- **`skills/params.py`**：15 个技能的参数模型集中定义。同一份 schema 同时喂给 LLM
+  函数描述、闸门校验、执行器入参，分散在三处必然漂移。
+
+- **CI 新增「安全评测」job**：`robot-agent eval --fail-under 1.0`。改动策略链或默认配置
+  导致行为漂移时立刻变红。
+
+### Changed
+
+- ROS2 执行器的导航与旋转统一为 odom 闭环，`rotate` 改用角速度闭环而非定时长；
+  夹爪接口约定为 `/gripper/position`（0 闭合、1 张开）。
+- `Skill.execute` 改为把**校验后的对象**传给 `run`。此前声明为 `list[GotoParams]` 的参数
+  实际收到 `list[dict]`，类型标注是假的——`patrol` 技能上真实触发过这个 bug。
+- `config/default.yaml` 的 `blocked_keywords` 补上「全速冲」：代码默认值里有它，YAML 漏了，
+  导致同一句指令在两种加载路径下判定不同。
+
+### Fixed
+
+- 策略链遇到 `instruction=None` 时 `in None` 抛 `TypeError`，被 fail-closed 兜底成拒绝，
+  会把「转人工审批」的用例误判成「已拦截」。
+- README 与 CHANGELOG 中因编辑事故产生的重复段落。
+
+### 已知缺口（如实保留）
+
+- `pick_cube` / `place_cube` 在 ROS2 侧走「导航到方块旁 → 开关夹爪 → 依赖物理吸附」的
+  降级路径，没有运动规划。固定场景可跑，杂乱场景不成立——真正的抓取需要 MoveIt2。
+- 评测集是回归基线，不是泛化证明。这句话写进了 README，而不是藏在指标后面。
+
 ## [1.1.0] - 2026-11-02
 
 ### Changed
@@ -17,12 +73,6 @@
   两条反向依赖。契约对象下沉后，四个使用方（规划/安全/编排/存储）只依赖模型本身。
   同时删除死代码 `runner.run_once`（唯一一处把组合根反向 import 进编排层的地方）。
   `planner` 与 `orchestration` 的公开导出保持不变，调用方无需改动。
-
-### Changed（编排层单一职责）
-
-- **报告渲染移出状态机**：`graph.py` 里 40 行的 `_render_report` 抽成 `reporting.py` 的纯函数。
-  改一句文案不再需要跑一遍 LangGraph，四种分支（成功/拦截/待审批/规划失败）也能单独测。
-  同时修正报告里的步骤序号从 0 起——给值班的人看「第 0 步」像是 bug。
 
 ### Changed（编排层单一职责）
 

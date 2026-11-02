@@ -29,6 +29,7 @@ safety:
   blocked_keywords:
     - 冲向
     - 撞
+    - 全速冲
     - destroy
   # 圆形禁区：充电桩
   geofences:

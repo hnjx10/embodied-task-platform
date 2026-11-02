@@ -144,6 +144,57 @@ async def _run_async(
         await assembly.aclose()
 
 
+# --------------------------------------------------------------------- eval
+
+
+@app.command("eval")
+def evaluate(
+    cases: Annotated[
+        Path | None, typer.Option("--cases", "-c", help="评测集路径，默认用包内数据集")
+    ] = None,
+    as_json: Annotated[bool, typer.Option("--json", help="输出机读 JSON")] = False,
+    verbose: Annotated[bool, typer.Option("--verbose", "-v", help="打印失败用例的输入与原因")] = (
+        False
+    ),
+    fail_under: Annotated[
+        float, typer.Option("--fail-under", help="通过率低于该阈值时返回非 0（用于 CI）")
+    ] = 0.0,
+    log_level: Annotated[
+        str | None, typer.Option("--log-level", help="默认 error，避免拦截日志刷屏")
+    ] = None,
+) -> None:
+    """跑安全评测集：拦截召回率、误拦率、分类明细。
+
+    只做「规划 + 安全判定」，不执行任何技能——评测的是该不该动，不是动得对不对。
+    因此不需要 ROS、不需要 Gazebo，毫秒级跑完，可以放进每次提交的 CI。
+    """
+    from robot_agent.evaluation import load_suite, run_suite
+    from robot_agent.factory import build_skill_backend
+    from robot_agent.planner.pipeline import Planner
+    from robot_agent.safety.gate import SafetyGate
+
+    settings = _settings(log_level=log_level or "error", json_logs=False)
+    try:
+        suite = load_suite(cases)
+    except RobotAgentError as exc:
+        _fail(exc, as_json)
+        return
+
+    registry, _handle, closer = build_skill_backend(settings)
+    try:
+        planner = Planner(settings, registry, force_rules=True)
+        gate = SafetyGate(settings.safety, settings.arena, registry)
+        report = run_suite(suite, planner, gate)
+    finally:
+        closer()
+
+    typer.echo(
+        console.eval_json(report) if as_json else console.eval_report(report, verbose=verbose)
+    )
+    passed = report.ok and report.pass_rate >= fail_under
+    raise typer.Exit(0 if passed else 1)
+
+
 # --------------------------------------------------------------------- serve
 
 

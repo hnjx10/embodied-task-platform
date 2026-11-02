@@ -17,6 +17,8 @@ import math
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from pydantic import ValidationError
+
 from robot_agent.config import ArenaSettings, SafetySettings
 from robot_agent.domain.plan import PlanStep
 from robot_agent.skills.base import SkillRegistry
@@ -98,6 +100,37 @@ class BlockedKeywordPolicy:
                 self.name,
                 f"指令包含高风险表述 {hits}，拒绝执行",
                 keywords=hits,
+            )
+        return PolicyDecision.pass_(self.name)
+
+
+class ParamSchemaPolicy:
+    """技能参数必须能通过该技能自己的 pydantic 校验。
+
+    参数校验原本只发生在 :meth:`Skill.execute` 里，但那时请求已经进入执行队列，
+    错误只能以「执行失败」的形式暴露。前移到闸门有两个直接收益：
+
+    * 非法计划根本不会变成任务记录，更不会触发任何硬件动作；
+    * LLM 幻觉出的多余/缺失参数在审计里留下的是「安全拒绝」，而不是「执行异常」——
+      前者意味着防线拦住了，后者意味着防线漏到了末端。
+
+    技能不存在时直接放行，把更准确的原因留给 :class:`SkillAllowlistPolicy`。
+    """
+
+    name = "param_schema"
+
+    def evaluate(self, step: PlanStep, ctx: PolicyContext) -> PolicyDecision:
+        if not ctx.registry.has(step.skill):
+            return PolicyDecision.pass_(self.name)
+        model = ctx.registry.get(step.skill).params_model
+        try:
+            model.model_validate(step.args)
+        except ValidationError as exc:
+            return PolicyDecision.deny(
+                self.name,
+                f"技能 '{step.skill}' 参数不合法: {_schema_errors(exc)}",
+                skill=step.skill,
+                args=step.args,
             )
         return PolicyDecision.pass_(self.name)
 
@@ -248,11 +281,21 @@ def _skill_risk(ctx: PolicyContext, name: str) -> str:
     return ctx.registry.get(name).risk
 
 
+def _schema_errors(exc: ValidationError) -> str:
+    """把 pydantic 的校验错误压成一行，便于写进审计与用户可见的拒绝原因。"""
+    parts: list[str] = []
+    for err in exc.errors():
+        loc = ".".join(str(item) for item in err["loc"]) or "<root>"
+        parts.append(f"{loc} {err['msg']}")
+    return "; ".join(parts)
+
+
 def default_policies() -> list[Policy]:
     """默认策略链。顺序有意义：先查技能合法性，再查物理约束，最后看是否需要审批。"""
     return [
         SkillAllowlistPolicy(),
         BlockedKeywordPolicy(),
+        ParamSchemaPolicy(),
         ArenaBoundsPolicy(),
         GeofencePolicy(),
         SpeedLimitPolicy(),

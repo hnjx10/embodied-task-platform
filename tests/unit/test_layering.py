@@ -43,6 +43,9 @@ LAYER_RANK: dict[str, int] = {
     "robot_agent.safety": 3,
     # L4 编排层：一次任务的生命周期
     "robot_agent.orchestration": 4,
+    # L4 评估层：消费规划与安全，产出「这套防线到底拦不拦得住」的结论。
+    # 与 orchestration 同为 L4 但互不依赖——评估只复用领域服务，不碰任务状态机。
+    "robot_agent.evaluation": 4,
     # L5 组合根：唯一知道所有实现的地方
     "robot_agent.factory": 5,
     # L6 交付层：CLI 与 HTTP
