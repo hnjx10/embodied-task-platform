@@ -12,9 +12,17 @@
   `ros2_ws/` 里。旧仓库地址由 GitHub 自动重定向。
 - **凭据不再硬编码、不落仓库**：发布工具改为按「环境变量 `GH_TOKEN` → 权限 600 的凭据文件」
   顺序取 token，任何输出前统一脱敏；同步前先扫描工作区，命中 token 字面量直接拒绝上传。
+- **抽取纯领域层 `domain/`**（`plan.py` + `state.py`）：`PlanStep`/`Plan` 原在 `planner/base.py`、
+  `TaskRecord` 原在 `orchestration/state.py`，导致 `safety → planner`、`storage → orchestration`
+  两条反向依赖。契约对象下沉后，四个使用方（规划/安全/编排/存储）只依赖模型本身。
+  同时删除死代码 `runner.run_once`（唯一一处把组合根反向 import 进编排层的地方）。
+  `planner` 与 `orchestration` 的公开导出保持不变，调用方无需改动。
 
 ### Added
 
+- **分层约束门禁**（`tests/unit/test_layering.py`）：AST 静态分析全部源码，校验「包必须登记层号 /
+  依赖只能向下 / 领域层零外部依赖 / 独立纵切不互依赖 / 只有交付层可碰组合根 / 包图无环」六条规则。
+  违规报错精确到 `robot_agent.skills (L2) 反向依赖 robot_agent.orchestration (L4)`。
 - **仓库级密钥扫描**（`tests/unit/test_no_secrets.py`）：对全部文本文件匹配 GitHub PAT /
   云厂商长期密钥 / 模型服务密钥 / 私钥块，随 `pytest` 在 CI 每次提交上执行。
   凭据一旦进入 git 历史就只能改写历史 + 吊销重发，这道门禁比 code review 更可靠。
@@ -61,7 +69,7 @@
 - **部署清单**：systemd unit（加固项齐全）、K8s Deployment/Service/PVC/ServiceMonitor。
 - **文档**：API 参考、架构说明（含失败隔离矩阵）、运维 Runbook（故障决策树 + 告警阈值）、
   两份 ADR（fail-closed、状态 CAS）、SECURITY 信任边界、CONTRIBUTING 扩展指南。
-- **测试**：215 个用例，覆盖策略边界、fail-closed、CAS 并发、哈希链篡改、CLI 退出码、
+- **测试**：221 个用例，覆盖策略边界、fail-closed、CAS 并发、哈希链篡改、CLI 退出码、
   LLM 重试/熔断/降级、HTTP 接口与 SSE、优雅关闭。
 - **质量门禁**：ruff（含 bandit/async/bugbear 规则）+ ruff format + mypy + GitHub Actions
   （3.10/3.11/3.12 矩阵、ROS 降级导入检查、镜像构建与容器冒烟）。

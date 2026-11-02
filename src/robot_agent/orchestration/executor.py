@@ -20,9 +20,9 @@ from typing import Any
 
 from robot_agent import metrics
 from robot_agent.config import ExecutorSettings
+from robot_agent.domain.plan import PlanStep, StepOutcome
 from robot_agent.errors import SkillExecutionError, SkillTimeoutError
 from robot_agent.logging import get_logger
-from robot_agent.planner.base import PlanStep, StepOutcome
 from robot_agent.skills.base import SkillRegistry
 
 logger = get_logger(__name__)

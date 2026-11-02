@@ -16,9 +16,9 @@ from fastapi import APIRouter, Request
 
 from robot_agent.api.deps import AuthDep
 from robot_agent.api.schemas import StopRequest
+from robot_agent.domain.state import utcnow
 from robot_agent.errors import ExecutorUnavailableError
 from robot_agent.logging import get_logger
-from robot_agent.orchestration.state import utcnow
 
 logger = get_logger(__name__)
 

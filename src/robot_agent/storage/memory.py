@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timedelta, timezone
 
+from robot_agent.domain.state import TaskRecord
 from robot_agent.errors import TaskNotFoundError
-from robot_agent.orchestration.state import TaskRecord
 
 
 class InMemoryTaskRepository:

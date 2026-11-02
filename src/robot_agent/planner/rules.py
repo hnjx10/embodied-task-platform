@@ -9,8 +9,8 @@ from __future__ import annotations
 
 import re
 
+from robot_agent.domain.plan import PlanStep
 from robot_agent.errors import PlanningError
-from robot_agent.planner.base import PlanStep
 
 # 颜色别名 → 场景中的模型名
 _COLOR_ALIASES = {

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Protocol, runtime_checkable
 
-from robot_agent.orchestration.state import TaskRecord
+from robot_agent.domain.state import TaskRecord
 
 
 @runtime_checkable

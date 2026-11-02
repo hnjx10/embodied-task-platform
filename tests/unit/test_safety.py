@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from robot_agent.config import ArenaSettings, Geofence, SafetySettings
-from robot_agent.planner.base import Plan, PlanStep
+from robot_agent.domain.plan import Plan, PlanStep
 from robot_agent.safety.gate import SafetyGate
 from robot_agent.safety.policies import PolicyContext, PolicyDecision
 from robot_agent.skills.base import SkillRegistry

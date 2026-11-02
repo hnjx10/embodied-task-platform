@@ -18,6 +18,7 @@ from typing import Any
 
 from robot_agent import metrics
 from robot_agent.config import LLMSettings
+from robot_agent.domain.plan import Plan, PlanStep
 from robot_agent.errors import (
     LLMBudgetExceededError,
     LLMError,
@@ -25,7 +26,6 @@ from robot_agent.errors import (
     PlanValidationError,
 )
 from robot_agent.logging import get_logger
-from robot_agent.planner.base import Plan, PlanStep
 from robot_agent.skills.base import SkillRegistry
 
 logger = get_logger(__name__)

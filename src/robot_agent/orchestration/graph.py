@@ -25,10 +25,10 @@ from langgraph.graph import END, START, StateGraph
 from robot_agent import metrics
 from robot_agent.audit import AuditLog
 from robot_agent.config import Settings
+from robot_agent.domain.plan import Plan, PlanStep, StepOutcome
 from robot_agent.errors import RobotAgentError
 from robot_agent.logging import get_logger
 from robot_agent.orchestration.executor import StepExecutor
-from robot_agent.planner.base import Plan, PlanStep, StepOutcome
 from robot_agent.planner.pipeline import Planner
 from robot_agent.safety.gate import SafetyGate
 from robot_agent.skills.base import SkillRegistry

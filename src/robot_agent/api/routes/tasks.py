@@ -24,8 +24,8 @@ from robot_agent.api.schemas import (
     RejectionRequest,
     TaskCreateRequest,
 )
+from robot_agent.domain.state import TaskRecord
 from robot_agent.logging import get_logger
-from robot_agent.orchestration.state import TaskRecord
 
 logger = get_logger(__name__)
 

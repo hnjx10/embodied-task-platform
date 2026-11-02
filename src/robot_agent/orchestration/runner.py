@@ -18,16 +18,16 @@ from typing import Any
 from robot_agent import metrics
 from robot_agent.audit import AuditLog
 from robot_agent.config import Settings
+from robot_agent.domain.plan import PlanStep, StepOutcome
+from robot_agent.domain.state import TaskRecord, new_task_id, utcnow
 from robot_agent.errors import (
     RobotAgentError,
     TaskConflictError,
     TaskNotFoundError,
 )
-from robot_agent.logging import bind_context, get_logger, request_context
+from robot_agent.logging import get_logger
 from robot_agent.orchestration.events import EventBus, TaskEvent
 from robot_agent.orchestration.graph import initial_state, record_task_metrics
-from robot_agent.orchestration.state import TaskRecord, new_task_id, utcnow
-from robot_agent.planner.base import PlanStep, StepOutcome
 from robot_agent.storage.base import TaskRepository
 
 logger = get_logger(__name__)
@@ -399,26 +399,3 @@ class TaskRunner:
             "task_finished", task_id=record.id, status=status, duration_s=round(duration, 3)
         )
         return updated
-
-
-async def run_once(
-    settings: Settings,
-    instruction: str,
-    *,
-    force_rules: bool = False,
-    auto_approve: bool = False,
-) -> TaskRecord:
-    """便捷函数：装配 → 提交 → 执行 → 释放。CLI 与集成测试共用。"""
-    from robot_agent.factory import build_assembly
-
-    assembly = await build_assembly(settings, force_rules=force_rules)
-    try:
-        with request_context() as trace_id:
-            bind_context(service=settings.service_name)
-            task = await assembly.runner.submit(instruction, trace_id=trace_id)
-            record = await assembly.runner.execute(task.id)
-            if record.status == "awaiting_approval" and auto_approve:
-                record = await assembly.runner.approve(task.id, approved_by="auto")
-            return record
-    finally:
-        await assembly.aclose()

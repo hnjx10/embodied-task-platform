@@ -15,9 +15,9 @@ from pathlib import Path
 
 import aiosqlite
 
+from robot_agent.domain.state import TERMINAL_STATUSES, TaskRecord
 from robot_agent.errors import StorageError, TaskNotFoundError
 from robot_agent.logging import get_logger
-from robot_agent.orchestration.state import TERMINAL_STATUSES, TaskRecord
 from robot_agent.storage.base import TaskRepository
 
 logger = get_logger(__name__)

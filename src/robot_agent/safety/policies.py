@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 from typing import Any, Protocol
 
 from robot_agent.config import ArenaSettings, SafetySettings
-from robot_agent.planner.base import PlanStep
+from robot_agent.domain.plan import PlanStep
 from robot_agent.skills.base import SkillRegistry
 
 

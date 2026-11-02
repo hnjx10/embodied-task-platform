@@ -8,9 +8,9 @@ from __future__ import annotations
 
 from robot_agent import metrics
 from robot_agent.config import Settings
+from robot_agent.domain.plan import Plan
 from robot_agent.errors import LLMError, PlanningError
 from robot_agent.logging import get_logger
-from robot_agent.planner.base import Plan
 from robot_agent.planner.llm import LLMPlanner
 from robot_agent.planner.rules import RulePlanner
 from robot_agent.skills.base import SkillRegistry

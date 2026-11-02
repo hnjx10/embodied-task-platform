@@ -22,7 +22,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from robot_agent.planner.base import PlanStep, StepOutcome
+from robot_agent.domain.plan import PlanStep, StepOutcome
 
 TaskStatus = Literal[
     "queued",

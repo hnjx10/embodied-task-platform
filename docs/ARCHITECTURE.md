@@ -3,31 +3,40 @@
 ## 分层与依赖方向
 
 ```
-        ┌─────────────────────────────────────────┐
-        │ 交付层   cli.py │ api/                  │
-        └───────────────────┬─────────────────────┘
-                            ▼
-        ┌─────────────────────────────────────────┐
-        │ 编排层   orchestration/                 │
-        │          graph │ runner │ executor      │
-        └───────────────────┬─────────────────────┘
-                            ▼
-        ┌─────────────────────────────────────────┐
-        │ 领域层   planner/ │ safety/              │
-        └───────────────────┬─────────────────────┘
-                            ▼
-        ┌─────────────────────────────────────────┐
-        │ 能力层   skills/ │ storage/              │
-        └───────────────────┬─────────────────────┘
-                            ▼
-        ┌─────────────────────────────────────────┐
-        │ 基础设施 config │ logging │ metrics      │
-        │          audit │ errors                 │
-        └─────────────────────────────────────────┘
+ L6  交付层        cli.py │ api/                    ← 只做参数解析、协议转换、错误映射
+ L5  组合根        factory.py                       ← 唯一知道所有具体实现的地方
+ L4  编排层        orchestration/                   ← 一次任务的生命周期
+                     graph │ runner │ executor │ events │ maintenance
+ L3  领域服务      planner/ │ safety/               ← 把能力编排成决策
+ L2  能力层        skills/ │ storage/                ← 真正干活：驱动执行器、落库
+ L1  领域模型      domain/                           ← 纯数据契约：Plan / TaskRecord
+ L0  基础设施      config │ logging │ metrics │ audit │ errors │ version
 ```
 
-**依赖只向下**，同层之间通过 `planner/base.py` 里的 `PlanStep` / `Plan` 契约通信。
-这样 `safety` 不需要知道 `orchestration` 的存在，`skills` 也不需要知道谁在调用它。
+**依赖只向下**。同层之间不互相 import：`planner` 不认识 `safety`，`skills` 不认识
+`storage`，它们共同依赖的只有 `domain` 里的契约对象。
+
+为什么 `domain/` 要单独成层：`PlanStep` 同时被规划、安全、编排、存储四方使用。
+如果它长在 `planner/` 里，其它三层就得反向依赖规划层——这正是一个包变成
+「什么都能干」的开始。抽成纯模型后，`safety` 只依赖「计划长什么样」，
+不依赖「计划怎么生成」。
+
+### 分层约束由测试强制
+
+`tests/unit/test_layering.py` 用 AST 解析全部源码，在每次提交上校验六条规则
+（不导入模块，所以无 ROS 环境下同样有效）：
+
+| 规则 | 违反后果 |
+|---|---|
+| 每个包必须在 `LAYER_RANK` 登记层号 | 新增包不能悄悄绕过分层 |
+| 依赖只能指向同层或更低层 | 防止 `skills` 反向 import `api` |
+| `domain` 不得有任何对外依赖 | 防止契约层被基础设施污染 |
+| 独立纵切不得互相依赖（planner↔safety、skills↔storage） | 防止职责边界模糊 |
+| 只有交付层可以 import `factory` | 防止绕过依赖注入 |
+| 包级依赖图无环 | 保证每一层可被单独理解与测试 |
+
+违规时的报错直接给出行号级结论，例如
+`robot_agent.skills (L2) 反向依赖 robot_agent.orchestration (L4)`。
 
 `factory.py` 是唯一的装配点。CLI、HTTP 服务、测试都调用 `build_assembly()`，
 保证「跑起来的东西」和「测的东西」是同一套对象图。

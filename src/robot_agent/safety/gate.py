@@ -14,8 +14,8 @@ from typing import Any
 
 from robot_agent import metrics
 from robot_agent.config import ArenaSettings, SafetySettings
+from robot_agent.domain.plan import Plan, PlanStep
 from robot_agent.logging import get_logger
-from robot_agent.planner.base import Plan, PlanStep
 from robot_agent.safety.policies import (
     Policy,
     PolicyContext,

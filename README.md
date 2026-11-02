@@ -2,7 +2,7 @@
 
 面向 ROS2 / Gazebo 机器人的 **LLM 任务编排服务**：把自然语言指令编译成受约束的技能序列，经安全闸门校验后驱动执行器完成任务，全过程可审计、可观测、可人工接管。
 
-不是「跑一次 demo 的脚本」，而是按生产标准组织的服务：分层依赖注入、策略化安全模型、哈希链审计、结构化日志、Prometheus 指标、可插拔执行器，以及 215 个测试与 CI 门禁。
+不是「跑一次 demo 的脚本」，而是按生产标准组织的服务：分层依赖注入、策略化安全模型、哈希链审计、结构化日志、Prometheus 指标、可插拔执行器，以及 221 个测试与 CI 门禁。
 
 ```
 自然语言 ──► 规划 ──► 安全闸门 ──► 执行 ──► 核验 ──► 报告
@@ -106,6 +106,8 @@ curl -s -X POST localhost:8080/v1/tasks \
 
 基础设施层：`config`（分层配置）· `logging`（structlog JSON）· `metrics`（Prometheus）· `audit`（哈希链）· `errors`（异常层级）· `storage`（SQLite / 内存）
 
+层间依赖方向由 `tests/unit/test_layering.py` 在 CI 上强制校验（AST 静态分析，六条规则），详见 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md#分层约束由测试强制)。
+
 ### 目录结构
 
 ```
@@ -117,8 +119,10 @@ src/robot_agent/
 ├── logging.py             # structlog JSON + trace_id 上下文
 ├── metrics.py             # Prometheus 指标（未装则降级为 no-op）
 ├── audit.py               # 哈希链审计，轮转 + 篡改检测
+├── domain/                # 领域模型（纯契约，不依赖任何其他业务包）
+│   ├── plan.py            #   PlanStep / Plan / StepOutcome
+│   └── state.py           #   TaskRecord / TaskStatus 状态机
 ├── planner/               # 规划层
-│   ├── base.py            #   PlanStep / Plan（层间唯一契约）
 │   ├── llm.py             #   LLM 规划：超时 + 重试 + 熔断 + 输出校验
 │   ├── rules.py           #   规则兜底：括号感知分句、坐标解析
 │   └── pipeline.py        #   降级链（LLM → 规则）
@@ -134,7 +138,7 @@ src/robot_agent/
 │   ├── executor.py        #   步骤执行：超时、重试、急停
 │   ├── runner.py          #   任务生命周期与状态机
 │   ├── events.py          #   事件总线（线程安全 + 背压）
-│   └── state.py           #   TaskRecord 状态机
+│   └── maintenance.py     #   过期任务清理（随 lifespan 起停）
 ├── storage/               # 持久化：SQLite（CAS）/ 内存
 └── api/                   # HTTP 控制面（FastAPI）
 
@@ -239,7 +243,7 @@ robot-agent run "把红色方块推到左边"
 ## 测试与质量门禁
 
 ```bash
-pytest                                              # 215 个用例
+pytest                                              # 221 个用例
 pytest --cov=robot_agent --cov-report=term-missing  # 覆盖率约 79%
 ruff check src tests && ruff format --check src tests
 mypy src

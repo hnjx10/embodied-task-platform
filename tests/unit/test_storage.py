@@ -7,8 +7,8 @@ from pathlib import Path
 
 import pytest
 
+from robot_agent.domain.state import TaskRecord
 from robot_agent.errors import TaskNotFoundError
-from robot_agent.orchestration.state import TaskRecord
 from robot_agent.storage.memory import InMemoryTaskRepository
 from robot_agent.storage.sqlite import SqliteTaskRepository, build_repository
 
