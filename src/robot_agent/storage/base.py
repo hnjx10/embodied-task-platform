@@ -15,6 +15,10 @@ from robot_agent.domain.state import TaskRecord
 class TaskRepository(Protocol):
     """任务仓库协议。全部方法为异步，避免阻塞事件循环。"""
 
+    async def open(self) -> None:
+        """建立连接、准备 schema。内存实现为空操作。"""
+        ...
+
     async def create(self, task: TaskRecord) -> TaskRecord: ...
 
     async def get(self, task_id: str) -> TaskRecord | None: ...

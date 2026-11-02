@@ -111,7 +111,7 @@ async def build_assembly(settings: Settings, *, force_rules: bool = False) -> As
 
     repository = build_repository(settings.storage.url)
     if isinstance(repository, SqliteTaskRepository):
-        await repository.init()
+        await repository.open()
         logger.info("storage_ready", url=settings.storage.url)
     elif settings.env != "test":
         logger.warning("storage_ephemeral", url=settings.storage.url)

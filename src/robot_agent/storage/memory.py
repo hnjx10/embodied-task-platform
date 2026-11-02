@@ -17,6 +17,10 @@ class InMemoryTaskRepository:
         self._by_idem: dict[str, str] = {}
         self._lock = asyncio.Lock()
 
+    async def open(self) -> None:
+        """内存实现无需建连，保留方法以满足仓储协议。"""
+        return None
+
     async def create(self, task: TaskRecord) -> TaskRecord:
         async with self._lock:
             if task.idempotency_key:

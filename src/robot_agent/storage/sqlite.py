@@ -52,7 +52,7 @@ class SqliteTaskRepository:
 
     # ------------------------------------------------------------------ 生命周期
 
-    async def init(self) -> None:
+    async def open(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(self.path)
         self._db.row_factory = aiosqlite.Row
@@ -70,7 +70,7 @@ class SqliteTaskRepository:
 
     def _conn(self) -> aiosqlite.Connection:
         if self._db is None:
-            raise StorageError("存储未初始化，请先 await repository.init()")
+            raise StorageError("存储未初始化，请先 await repository.open()")
         return self._db
 
     # ------------------------------------------------------------------ CRUD

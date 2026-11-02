@@ -47,6 +47,7 @@ LAYER_RANK: dict[str, int] = {
     # L6 交付层：CLI 与 HTTP
     "robot_agent.api": 6,
     "robot_agent.cli": 6,
+    "robot_agent.console": 6,  # 终端输出渲染，只被 cli 使用，不参与业务
 }
 
 #: 同层内互不依赖的纵切：允许依赖公共基础设施，但不允许彼此耦合。

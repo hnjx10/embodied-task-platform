@@ -20,12 +20,13 @@ from typing import Annotated, Any
 
 import typer
 
-from robot_agent import metrics
+from robot_agent import console, metrics
 from robot_agent.audit import tail_entries
 from robot_agent.config import Settings, load_settings
 from robot_agent.domain.state import utcnow
 from robot_agent.errors import ExecutorUnavailableError, RobotAgentError
 from robot_agent.logging import configure_logging, request_context
+from robot_agent.storage.session import open_repository
 from robot_agent.version import __version__
 
 app = typer.Typer(
@@ -72,17 +73,16 @@ def _settings(
 
 
 def _fail(exc: Exception, as_json: bool = False) -> None:
+    """统一的失败出口：机读走 stdout 的 JSON，人读走 stderr 的彩色行。"""
     if isinstance(exc, RobotAgentError):
         if as_json:
-            typer.echo(json.dumps({"ok": False, "error": exc.to_dict()}, ensure_ascii=False))
+            typer.echo(console.error_json(exc))
         else:
-            typer.secho(f"[{exc.code}] {exc.message}", fg=typer.colors.RED, err=True)
-        raise typer.Exit(1) from exc
-    typer.secho(f"未预期错误: {exc}", fg=typer.colors.RED, err=True)
-    if as_json:
-        typer.echo(
-            json.dumps({"ok": False, "error": {"code": "internal_error", "message": str(exc)}})
-        )
+            typer.secho(console.error_line(exc), fg=typer.colors.RED, err=True)
+    else:
+        typer.secho(f"未预期错误: {exc}", fg=typer.colors.RED, err=True)
+        if as_json:
+            typer.echo(console.unknown_error_json(exc))
     raise typer.Exit(1) from exc
 
 
@@ -123,11 +123,8 @@ async def _run_async(
             record = await assembly.runner.execute(task.id)
 
             if record.status == "awaiting_approval" and approve:
-                reasons = "; ".join(record.plan_warnings) or "高风险动作"
                 if not as_json:
-                    typer.secho(f"\n待审批: {reasons}", fg=typer.colors.YELLOW)
-                    for step in record.plan:
-                        typer.echo(f"  - {step.skill}({step.args})")
+                    typer.secho("\n" + console.plan_preview(record), fg=typer.colors.YELLOW)
                     confirmed = typer.confirm("是否批准执行？", default=False)
                 else:
                     confirmed = False
@@ -137,12 +134,11 @@ async def _run_async(
                     record = await assembly.runner.reject(task.id, reason="操作员拒绝")
 
             if as_json:
-                typer.echo(json.dumps(record.to_public(), ensure_ascii=False, indent=2))
+                typer.echo(console.task_json(record))
             else:
-                typer.echo("\n" + (record.report or "(无报告)"))
-                typer.echo(f"\n任务 ID: {record.id}｜状态: {record.status}")
-                if record.error:
-                    typer.secho(f"错误: {record.error}", fg=typer.colors.RED, err=True)
+                typer.echo("\n" + console.task_report(record))
+            if record.error:
+                typer.secho(f"错误: {record.error}", fg=typer.colors.RED, err=True)
             return 0 if record.status == "succeeded" else 1
     finally:
         await assembly.aclose()
@@ -189,18 +185,7 @@ def tasks_list(
     """列出历史任务。"""
     settings = _settings(json_logs=False)
     records = asyncio.run(_list_tasks(settings, status, limit))
-    if as_json:
-        typer.echo(json.dumps([r.to_public() for r in records], ensure_ascii=False, indent=2))
-        return
-    if not records:
-        typer.echo("没有任务记录")
-        return
-    typer.echo(f"{'任务 ID':<26} {'状态':<18} {'创建时间':<26} 指令")
-    for r in records:
-        typer.echo(
-            f"{r.id:<26} {r.status:<18} {r.created_at.isoformat(timespec='seconds'):<26} "
-            f"{r.instruction[:40]}"
-        )
+    typer.echo(console.task_list_json(records) if as_json else console.task_table(records))
 
 
 @tasks_app.command("purge")
@@ -213,40 +198,24 @@ def tasks_purge(
     retention = settings.storage.retention_hours
 
     async def _purge() -> int:
-        from robot_agent.storage.sqlite import SqliteTaskRepository, build_repository
-
-        repo = build_repository(settings.storage.url)
-        if isinstance(repo, SqliteTaskRepository):
-            await repo.init()
-        try:
+        async with open_repository(settings.storage.url) as repo:
             if dry_run:
                 cutoff = utcnow() - timedelta(hours=retention)
                 expired = await repo.list(status=None, limit=1000)
                 return sum(1 for r in expired if r.is_terminal and r.created_at < cutoff)
             return await repo.purge_expired(retention)
-        finally:
-            await repo.close()
 
     count = asyncio.run(_purge())
-    payload = {"retention_hours": retention, "dry_run": dry_run, "count": count}
     if as_json:
+        payload = {"retention_hours": retention, "dry_run": dry_run, "count": count}
         typer.echo(json.dumps(payload, ensure_ascii=False))
-    elif dry_run:
-        typer.echo(f"将清理 {count} 条过期任务（保留 {retention} 小时，未删除）")
     else:
-        typer.echo(f"已清理 {count} 条过期任务（保留 {retention} 小时）")
+        typer.echo(console.purge_message(count, retention_hours=retention, dry_run=dry_run))
 
 
 async def _list_tasks(settings: Settings, status: str | None, limit: int) -> list[Any]:
-    from robot_agent.storage.sqlite import SqliteTaskRepository, build_repository
-
-    repo = build_repository(settings.storage.url)
-    if isinstance(repo, SqliteTaskRepository):
-        await repo.init()
-    try:
+    async with open_repository(settings.storage.url) as repo:
         return await repo.list(status=status, limit=limit)
-    finally:
-        await repo.close()
 
 
 @tasks_app.command("show")
@@ -255,21 +224,14 @@ def tasks_show(task_id: str) -> None:
     settings = _settings(json_logs=False)
 
     async def _get() -> Any:
-        from robot_agent.storage.sqlite import SqliteTaskRepository, build_repository
-
-        repo = build_repository(settings.storage.url)
-        if isinstance(repo, SqliteTaskRepository):
-            await repo.init()
-        try:
+        async with open_repository(settings.storage.url) as repo:
             return await repo.get(task_id)
-        finally:
-            await repo.close()
 
     record = asyncio.run(_get())
     if record is None:
         typer.secho(f"任务不存在: {task_id}", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
-    typer.echo(json.dumps(record.to_public(), ensure_ascii=False, indent=2))
+    typer.echo(console.task_json(record))
 
 
 # --------------------------------------------------------------------- audit
@@ -301,15 +263,7 @@ def audit_tail(limit: Annotated[int, typer.Option("--limit")] = 20) -> None:
     """查看最近的审计事件。"""
     settings = _settings(json_logs=False)
     entries = tail_entries(settings.audit.path, limit)
-    if not entries:
-        typer.echo(f"没有审计记录（{settings.audit.path}）")
-        return
-    for entry in entries:
-        typer.echo(
-            f"{entry.get('ts', '')} {entry.get('event', ''):<10} "
-            f"{entry.get('task_id') or '-':<24} "
-            f"{json.dumps(entry.get('data', {}), ensure_ascii=False)[:100]}"
-        )
+    typer.echo(console.audit_table(entries, path=str(settings.audit.path)))
 
 
 # --------------------------------------------------------------------- 其它

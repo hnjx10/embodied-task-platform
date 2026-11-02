@@ -18,6 +18,16 @@
   同时删除死代码 `runner.run_once`（唯一一处把组合根反向 import 进编排层的地方）。
   `planner` 与 `orchestration` 的公开导出保持不变，调用方无需改动。
 
+### Changed（交付层单一职责）
+
+- **CLI 拆出渲染层** `console.py`：表格、JSON、错误行、审计列表等纯字符串函数从命令函数里移出，
+  命令只表达「做什么」。顺手修掉中英混排时**表格错位**——原实现用 `len()` 对齐，
+  中文占两列却按一列算；现在按终端显示宽度（East Asian Width）补空格与截断。
+- **仓储打开语义收进存储层**：`TaskRepository` 协议新增 `open()`（建立连接/建表），
+  `sqlite` 的 `init()` 更名对齐；新增 `storage.session.open_repository()` 上下文管理器。
+  CLI 三个子命令原本各自抄一遍「build → isinstance 判断 → init → try/finally close」，
+  还把 `SqliteTaskRepository` 的实例判断泄漏到交付层，现在只写 `async with open_repository(url)`。
+
 ### Added
 
 - **分层约束门禁**（`tests/unit/test_layering.py`）：AST 静态分析全部源码，校验「包必须登记层号 /
@@ -69,7 +79,7 @@
 - **部署清单**：systemd unit（加固项齐全）、K8s Deployment/Service/PVC/ServiceMonitor。
 - **文档**：API 参考、架构说明（含失败隔离矩阵）、运维 Runbook（故障决策树 + 告警阈值）、
   两份 ADR（fail-closed、状态 CAS）、SECURITY 信任边界、CONTRIBUTING 扩展指南。
-- **测试**：221 个用例，覆盖策略边界、fail-closed、CAS 并发、哈希链篡改、CLI 退出码、
+- **测试**：244 个用例，覆盖策略边界、fail-closed、CAS 并发、哈希链篡改、CLI 退出码、
   LLM 重试/熔断/降级、HTTP 接口与 SSE、优雅关闭。
 - **质量门禁**：ruff（含 bandit/async/bugbear 规则）+ ruff format + mypy + GitHub Actions
   （3.10/3.11/3.12 矩阵、ROS 降级导入检查、镜像构建与容器冒烟）。

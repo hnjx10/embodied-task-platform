@@ -3,7 +3,7 @@
 ## 分层与依赖方向
 
 ```
- L6  交付层        cli.py │ api/                    ← 只做参数解析、协议转换、错误映射
+ L6  交付层        cli.py │ console.py │ api/       ← 参数解析、协议转换、输出渲染
  L5  组合根        factory.py                       ← 唯一知道所有具体实现的地方
  L4  编排层        orchestration/                   ← 一次任务的生命周期
                      graph │ runner │ executor │ events │ maintenance

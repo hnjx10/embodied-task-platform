@@ -19,7 +19,7 @@ async def repo(request, tmp_path: Path):
         yield InMemoryTaskRepository()
         return
     sqlite_repo = SqliteTaskRepository(tmp_path / "tasks.db")
-    await sqlite_repo.init()
+    await sqlite_repo.open()
     try:
         yield sqlite_repo
     finally:
