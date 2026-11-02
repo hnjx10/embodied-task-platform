@@ -30,6 +30,8 @@ jobs:
         run: ruff check src tests
       - name: Ruff format
         run: ruff format --check src tests
+      - name: Ruff（ROS2 辅助包）
+        run: ruff check ros2_ws && ruff format --check ros2_ws
       - name: Mypy
         run: mypy src
 
@@ -86,6 +88,34 @@ jobs:
               print("OK:", exc.message)
           else:
               raise SystemExit("应当抛出 ExecutorUnavailableError")
+          PY
+      - name: 校验 ros2_ws 包结构与语法
+        # colcon build 需要完整 ROS2 环境，CI 只做「结构 + 语法 + 元数据」静态校验，
+        # 真正编译由 Ubuntu 现场或 ros:humble 镜像完成。
+        run: |
+          python -m compileall -q ros2_ws/src
+          python - <<'PY'
+          import ast
+          import pathlib
+          import xml.etree.ElementTree as ET
+
+          pkgs = list(pathlib.Path("ros2_ws").rglob("package.xml"))
+          assert pkgs, "找不到 package.xml"
+          for pkg in pkgs:
+              root = ET.parse(pkg).getroot()
+              assert root.tag == "package", f"{pkg}: 根节点必须是 <package>"
+              name = root.findtext("name")
+              assert name and (pkg.parent / "resource" / name).exists(), \
+                  f"{pkg}: 缺少 resource/{name}（ament 索引标记）"
+              assert (pkg.parent / "setup.py").exists(), f"{pkg}: ament_python 包缺少 setup.py"
+
+          launches = list(pathlib.Path("ros2_ws").rglob("*launch*.py"))
+          assert launches, "找不到 launch 文件"
+          for f in launches:
+              tree = ast.parse(f.read_text(encoding="utf-8"))
+              funcs = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+              assert "generate_launch_description" in funcs, f"{f}: 缺少 generate_launch_description"
+          print(f"OK: {len(pkgs)} 个包，{len(launches)} 个 launch 文件")
           PY
 
   docker:

@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>robot_agent_ros2</name>
+  <version>1.0.0</version>
+  <description>
+    ROS2 侧的场景与桥接：启动 Gazebo 空世界 + TurtleBot3 + 三个彩色方块。
+    任务编排本身在 Python 包 robot_agent 中（独立进程，通过 ROS2 话题通信），
+    两者解耦，因此可以只换执行器而不动编排层。
+  </description>
+  <maintainer email="16681611657@163.com">Jiang Hua</maintainer>
+  <license>MIT</license>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>gazebo_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>turtlebot3_gazebo</exec_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

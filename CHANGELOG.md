@@ -37,19 +37,20 @@
   LLM 重试/熔断/降级、HTTP 接口与 SSE、优雅关闭。
 - **质量门禁**：ruff（含 bandit/async/bugbear 规则）+ ruff format + mypy + GitHub Actions
   （3.10/3.11/3.12 矩阵、ROS 降级导入检查、镜像构建与容器冒烟）。
+- **ROS2 包**：`ros2_ws/src/robot_agent_ros2` 采用标准 `ament_python` 结构，
+  `ros2 launch robot_agent_ros2 demo.launch.py` 一条命令拉起世界与三个方块；
+  `spawn_cubes` 由 `TimerAction` 延时 5s，规避 `/spawn_entity` 服务未就绪的竞态。
+- `tests/` 分三层：`unit`（策略/规则/技能/审计/存储/LLM）、`integration`（图/API）、`e2e`（CLI）。
+- `Makefile` 提供 install/test/check/run/doctor 等常用命令。
+- `config/default.yaml` 与 `config/production.yaml` 双环境示例；`.env.example` 说明全部变量。
+- `pre-commit` 钩子：ruff、mypy、单元测试（pre-push）。
 
 ### Changed
 
 - 规则规划器改为**括号感知分句**，修复坐标 `(1.0, 0.5)` 被逗号切断的问题。
 - 方向目标点收缩 20% 边距，避免目标贴住物理围挡。
 - 日志输出改到 **stderr**，stdout 留给结构化输出（`--json` 可被 `jq` 直接消费）。
-
-### Added (测试与工程化)
-
-- `tests/` 分三层：`unit`（策略/规则/技能/审计/存储/LLM）、`integration`（图/API）、`e2e`（CLI）。
-- `Makefile` 提供 install/test/check/run/doctor 等常用命令。
-- `config/default.yaml` 与 `config/production.yaml` 双环境示例；`.env.example` 说明全部变量。
-- `pre-commit` 钩子：ruff、mypy、单元测试（pre-push）。
+- 仿真辅助脚本迁入 `ros2_ws`，README 的接入步骤改为 `colcon build` + `ros2 launch`。
 
 ### Fixed
 
@@ -62,3 +63,5 @@
 
 - `src/audit.py` / `src/graph.py` / `src/planner.py` / `src/safety.py` / `src/skills/*`
   的平铺模块（迁移到 `src/robot_agent/` 对应子包）。
+- 根目录 `launch/demo.launch.py` 与 `scripts/spawn_cubes.py`（迁入 `ros2_ws` 的 ament 包）。
+- 根目录 `scripts/demo.py`（已被 `robot-agent run` 取代，且引用了已删除的模块）。

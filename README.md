@@ -2,7 +2,7 @@
 
 面向 ROS2 / Gazebo 机器人的 **LLM 任务编排服务**：把自然语言指令编译成受约束的技能序列，经安全闸门校验后驱动执行器完成任务，全过程可审计、可观测、可人工接管。
 
-不是「跑一次 demo 的脚本」，而是按生产标准组织的服务：分层依赖注入、策略化安全模型、哈希链审计、结构化日志、Prometheus 指标、可插拔执行器，以及 116 个测试与 CI 门禁。
+不是「跑一次 demo 的脚本」，而是按生产标准组织的服务：分层依赖注入、策略化安全模型、哈希链审计、结构化日志、Prometheus 指标、可插拔执行器，以及 160 个测试与 CI 门禁。
 
 ```
 自然语言 ──► 规划 ──► 安全闸门 ──► 执行 ──► 核验 ──► 报告
@@ -65,17 +65,6 @@ robot-agent run "全速开到 (1.0, 1.0)"        # 自动降速至 0.22 m/s 后�
 robot-agent serve                                  # 默认 127.0.0.1:8080
 open http://127.0.0.1:8080/docs                    # OpenAPI 交互文档
 
-curl -s -X POST localhost:8080/v1/tasks   -H 'Content-Type: application/json'   -d '{"instruction":"把红色方块推到左边","wait":true}' | jq '.status, .outcomes'
-```
-
-实时进度用 SSE：`GET /v1/tasks/{id}/events`　｜　完整接口见 [docs/API.md](docs/API.md)
-
-### HTTP 控制面
-
-```bash
-robot-agent serve                                  # 默认 127.0.0.1:8080
-open http://127.0.0.1:8080/docs                    # OpenAPI 交互文档
-
 curl -s -X POST localhost:8080/v1/tasks \
   -H 'Content-Type: application/json' \
   -d '{"instruction":"把红色方块推到左边","wait":true}' | jq '.status, .outcomes'
@@ -90,7 +79,7 @@ curl -s -X POST localhost:8080/v1/tasks \
 ```
                     ┌────────────────────────────────┐
    CLI (typer) ────►│  TaskRunner                    │  任务生命周期
-                    │  ├── asyncio 并发控制           │  · 幂等键
+   HTTP (fastapi)──►│  ├── asyncio 并发控制           │  · 幂等键
                     │  ├── 物理动作串行锁             │  · CAS 状态迁移
                     │  └── 事件总线（SSE/WS 就绪）    │  · 人工审批
                     └───────────────┬────────────────┘
@@ -147,6 +136,10 @@ src/robot_agent/
 │   └── state.py           #   TaskRecord 状态机
 ├── storage/               # 持久化：SQLite（CAS）/ 内存
 └── api/                   # HTTP 控制面（FastAPI）
+
+ros2_ws/src/robot_agent_ros2/     # ament_python 包：世界启动 + 方块生成
+├── robot_agent_ros2/spawn_cubes.py
+└── launch/demo.launch.py
 ```
 
 ---
@@ -223,12 +216,18 @@ robot-agent audit tail -n 5
 sudo apt install ros-humble-turtlebot3-gazebo ros-humble-gazebo-ros-pkgs
 export TURTLEBOT3_MODEL=waffle
 
-ros2 launch turtlebot3_gazebo empty_world.launch.py   # 终端 1
-python scripts/spawn_cubes.py                          # 终端 2
+# 1) 编译仿真辅助包（世界启动 + 方块生成）
+cd ros2_ws && colcon build --symlink-install && source install/setup.bash && cd ..
 
+# 2) 启动世界与方块（launch 内置 5s 延时，等 Gazebo 就绪再 spawn，避免服务未起的竞态）
+ros2 launch robot_agent_ros2 demo.launch.py
+
+# 3) 切到 ROS2 执行器
 export ROBOT_AGENT_EXECUTOR__BACKEND=ros2
-robot-agent run "把红色方块推到左边"                    # 终端 3
+robot-agent run "把红色方块推到左边"
 ```
+
+方块坐标必须是**唯一事实源**：`spawn_cubes.py` 里的 `CUBES` 与 `config/default.yaml` 的 `arena.cube_layout` 必须一致，否则规划器会对着空气推箱子。详见 [ros2_ws/README.md](ros2_ws/README.md)。
 
 `skills/ros2.py` 与 `skills/mock.py` 实现**同一组技能接口**，编排层只依赖 `SkillRegistry`（依赖倒置）。CI 无仿真环境也能跑完整链路，切到真机只需改一个环境变量。
 
@@ -237,15 +236,17 @@ robot-agent run "把红色方块推到左边"                    # 终端 3
 ## 测试与质量门禁
 
 ```bash
-pytest                                              # 116 个用例
-pytest --cov=robot_agent --cov-report=term-missing
+pytest                                              # 160 个用例
+pytest --cov=robot_agent --cov-report=term-missing  # 覆盖率约 79%
 ruff check src tests && ruff format --check src tests
 mypy src
 ```
 
 测试用**真实组件**装配（真 SQLite、真审计文件、真图），只把物理世界换成 mock——mock 掉自己写的业务代码，测试就退化成自我确认。
 
-覆盖重点：策略链边界、fail-closed、CAS 并发审批、哈希链篡改检测、CLI 退出码契约、幂等、事件流。
+覆盖重点：策略链边界、fail-closed、CAS 并发审批、哈希链篡改检测、CLI 退出码契约、幂等、SSE 事件流、LLM 重试与熔断。
+
+CI 四个 job：静态检查（ruff + mypy）→ 测试矩阵（3.10 / 3.11 / 3.12）→ ROS2 导入检查（无 rclpy 环境下必须可导入）→ 镜像构建。
 
 ---
 
@@ -276,38 +277,7 @@ kubectl apply -f deploy/k8s/
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 分层与依赖方向、并发模型、扩展点、失败隔离 |
 | [docs/OPERATIONS.md](docs/OPERATIONS.md) | 部署、告警阈值、故障决策树、审计合规、备份恢复 |
 | [docs/adr/](docs/adr/) | 架构决策记录：为什么 fail-closed、为什么用 CAS |
-| [SECURITY.md](SECURITY.md) | 信任边界、已知限制、加固清单 |
-| [CONTRIBUTING.md](CONTRIBUTING.md) | 开发流程、如何新增技能/策略 |
-
----
-
-## 部署
-
-三种形态，按现场条件选（详见 [deploy/README.md](deploy/README.md)）：
-
-```bash
-# 容器
-docker compose up -d
-
-# systemd（ROS2 场景推荐：避免 DDS 跨网络问题）
-sudo cp deploy/systemd/robot-agent.service /etc/systemd/system/ && sudo systemctl enable --now robot-agent
-
-# Kubernetes
-kubectl apply -f deploy/k8s/
-```
-
-生产启动护栏会在以下情况**直接拒绝启动**：关闭审计、对外监听却无 token、使用内存存储。
-
----
-
-## 文档
-
-| 文档 | 内容 |
-|---|---|
-| [docs/API.md](docs/API.md) | HTTP 接口、SSE 事件、错误码、客户端示例 |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 分层与依赖方向、并发模型、扩展点、失败隔离 |
-| [docs/OPERATIONS.md](docs/OPERATIONS.md) | 部署、告警阈值、故障决策树、审计合规、备份恢复 |
-| [docs/adr/](docs/adr/) | 架构决策记录：为什么 fail-closed、为什么用 CAS |
+| [ros2_ws/README.md](ros2_ws/README.md) | 仿真环境搭建、方块坐标一致性约定 |
 | [SECURITY.md](SECURITY.md) | 信任边界、已知限制、加固清单 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 开发流程、如何新增技能/策略 |
 
@@ -328,6 +298,7 @@ kubectl apply -f deploy/k8s/
 ## Roadmap
 
 - [x] HTTP 控制面（任务 CRUD、SSE 实时进度、OpenAPI 文档、审批流）
+- [x] ROS2 ament 包（一键拉起世界与方块）
 - [ ] MoveIt2 机械臂抓放（替换推箱）
 - [ ] Isaac Sim 执行器
 - [ ] OpenTelemetry 链路追踪

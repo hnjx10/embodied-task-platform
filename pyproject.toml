@@ -78,6 +78,8 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106"]
 "src/robot_agent/skills/ros2.py" = ["N999"]
+# ROS2 辅助脚本面向终端用户，用 print 输出人类可读提示（依赖未装上时连 rclpy 日志都没有）
+"ros2_ws/**" = ["T201"]
 
 [tool.mypy]
 python_version = "3.10"
