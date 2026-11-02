@@ -253,3 +253,24 @@ async def test_sse_stream_closes_on_terminal(client: AsyncClient) -> None:
             if b"event: end" in chunk:
                 break
     assert b"event: status" in chunk
+
+
+async def test_oversized_body_rejected(client: AsyncClient) -> None:
+    """声明就超限的请求体，应在读 body 之前被 413 拒掉。"""
+    huge = "把红色方块推到左边" + "啊" * 40000  # ≈120 KB UTF-8，远超 64 KiB 上限
+    resp = await client.post("/v1/tasks", json={"instruction": huge, "wait": False})
+    assert resp.status_code == 413
+    error = resp.json()["error"]
+    assert error["code"] == "payload_too_large"
+    assert error["details"]["limit_bytes"] == 64 * 1024
+
+
+async def test_body_limit_configured_per_app(tmp_path: Path) -> None:
+    settings = make_settings(tmp_path, api={"request_timeout_s": 10.0, "max_request_bytes": 1024})
+    app = create_app(settings)
+    async with app.router.lifespan_context(app):
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as c:
+            resp = await c.post("/v1/tasks", json={"instruction": "x" * 2000, "wait": False})
+            assert resp.status_code == 413
+            assert resp.json()["error"]["details"]["limit_bytes"] == 1024

@@ -178,6 +178,12 @@ class APISettings(BaseModel):
     max_concurrent_tasks: int = Field(default=4, ge=1, le=64)
     max_queue_size: int = Field(default=64, ge=1, le=1024)
     request_timeout_s: float = Field(default=180.0, gt=0.0)
+    max_request_bytes: int = Field(
+        default=64 * 1024,
+        ge=1024,
+        le=8 * 1024 * 1024,
+        description="单个请求体字节上限；指令只有 500 字符，64 KiB 已足够宽松",
+    )
 
     @field_validator("auth_token", mode="before")
     @classmethod

@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -44,6 +45,96 @@ ASGIApp = Callable[
 ]
 
 TRACE_HEADER_LOWER = b"x-trace-id"
+
+
+class _BodyTooLargeError(Exception):
+    """内部信号：请求体超过上限。不在中间件外部暴露。"""
+
+
+class BodyLimitMiddleware:
+    """限制请求体字节数，超限直接 413。
+
+    只信 ``Content-Length`` 是不够的：chunked 传输没有这个头，头也可以撒谎。
+    所以两条路都堵——声明值超限直接拒（省掉读 body 的开销），否则包一层
+    ``receive`` 边读边计数，中途越界即刻中断。
+
+    这层挡的是「一个大 JSON 把进程内存打满」这类攻击；指令本身限制在 500 字符，
+    64 KiB 的默认上限已经宽松得离谱了。
+    """
+
+    def __init__(self, app: ASGIApp, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = max_bytes
+
+    async def __call__(self, scope: Scope, receive: Any, send: Any) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        declared = _declared_length(scope)
+        if declared is not None and declared > self.max_bytes:
+            await _send_too_large(send, self.max_bytes, declared)
+            return
+
+        received = 0
+        started = False
+
+        async def tracked_send(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        async def limited_receive() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.max_bytes:
+                    raise _BodyTooLargeError
+            return message
+
+        try:
+            await self.app(scope, limited_receive, tracked_send)
+        except _BodyTooLargeError:
+            # 响应已开始就只能中断：ASGI 不允许再发一个 response.start
+            if not started:
+                await _send_too_large(send, self.max_bytes, received)
+
+
+def _declared_length(scope: Scope) -> int | None:
+    for key, value in scope.get("headers", []):
+        if key.lower() == b"content-length":
+            try:
+                return int(value)
+            except ValueError:
+                return None
+    return None
+
+
+async def _send_too_large(send: Any, limit: int, actual: int) -> None:
+    payload = json.dumps(
+        {
+            "error": {
+                "code": "payload_too_large",
+                "message": f"请求体超过上限 {limit} 字节",
+                "details": {"limit_bytes": limit, "received_bytes": actual},
+            }
+        },
+        ensure_ascii=False,
+    ).encode("utf-8")
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [
+                (b"content-type", b"application/json; charset=utf-8"),
+                (b"content-length", str(len(payload)).encode()),
+                (b"connection", b"close"),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": payload})
 
 
 class TraceMiddleware:
@@ -156,6 +247,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         ],
     )
 
+    app.add_middleware(BodyLimitMiddleware, max_bytes=settings.api.max_request_bytes)
     app.add_middleware(TraceMiddleware)
     if settings.api.cors_origins:
         app.add_middleware(

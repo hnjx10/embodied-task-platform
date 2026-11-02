@@ -137,12 +137,25 @@ curl -s localhost:8080/readyz | jq
 | 401 | `unauthorized` | 缺 token / token 无效 |
 | 404 | `task_not_found` | 任务不存在 |
 | 409 | `task_conflict` | 状态已变更（重复审批、取消执行中任务） |
+| 413 | `payload_too_large` | 请求体超过 `api.max_request_bytes`（默认 64 KiB） |
 | 422 | `validation_error` | 请求体校验失败 |
 | 422 | `planning_error` | 指令无法解析 |
 | 422 | `safety_violation` | 安全闸门拒绝 |
 | 500 | `internal_error` | 未预期错误（只回 trace_id，不回内部细节） |
 | 502 | `llm_error` | LLM 上游异常 |
 | 503 | `executor_unavailable` | 执行器不可用 |
+
+## 请求限制
+
+服务端不做无限承诺，以下限制都是可配置的：
+
+| 项 | 默认值 | 配置项 |
+|---|---|---|
+| 请求体大小 | 64 KiB（超限 413） | `ROBOT_AGENT_API__MAX_REQUEST_BYTES` |
+| 同步等待（`wait=true`） | 180s，超时返回 202 并转入后台 | `ROBOT_AGENT_API__REQUEST_TIMEOUT_S` |
+| 并发执行任务数 | 4（物理动作始终串行） | `ROBOT_AGENT_API__MAX_CONCURRENT_TASKS` |
+| 列表分页 | `limit ≤ 200` | — |
+| 指令长度 | 500 字符 | — |
 
 ## 客户端示例
 

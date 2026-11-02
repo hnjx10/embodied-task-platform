@@ -29,11 +29,13 @@
   `/healthz` `/readyz` `/metrics`、Bearer 鉴权、X-Trace-Id 透传、OpenAPI 文档。
   纯 ASGI 中间件避免 SSE 被缓冲；异常统一映射为稳定错误码。
 - **优雅关闭**：先等在飞任务收尾（默认 10s）再释放资源，避免任务状态卡在 running。
+- **请求体上限**：纯 ASGI 中间件按字节数拦截（默认 64 KiB，超限 413 `payload_too_large`），
+  同时校验声明长度与实际读取量，chunked 传输与伪造 `Content-Length` 都挡得住。
 - **容器化**：多阶段 Dockerfile（非 root、只读根文件系统、HEALTHCHECK）、docker-compose。
 - **部署清单**：systemd unit（加固项齐全）、K8s Deployment/Service/PVC/ServiceMonitor。
 - **文档**：API 参考、架构说明（含失败隔离矩阵）、运维 Runbook（故障决策树 + 告警阈值）、
   两份 ADR（fail-closed、状态 CAS）、SECURITY 信任边界、CONTRIBUTING 扩展指南。
-- **测试**：167 个用例，覆盖策略边界、fail-closed、CAS 并发、哈希链篡改、CLI 退出码、
+- **测试**：176 个用例，覆盖策略边界、fail-closed、CAS 并发、哈希链篡改、CLI 退出码、
   LLM 重试/熔断/降级、HTTP 接口与 SSE、优雅关闭。
 - **质量门禁**：ruff（含 bandit/async/bugbear 规则）+ ruff format + mypy + GitHub Actions
   （3.10/3.11/3.12 矩阵、ROS 降级导入检查、镜像构建与容器冒烟）。
