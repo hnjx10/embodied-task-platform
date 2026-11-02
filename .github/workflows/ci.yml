@@ -1,0 +1,120 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PYTHONUNBUFFERED: "1"
+  PIP_DISABLE_PIP_VERSION_CHECK: "1"
+
+jobs:
+  quality:
+    name: 静态检查
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: 安装依赖
+        run: pip install -e ".[dev,api]"
+      - name: Ruff lint
+        run: ruff check src tests
+      - name: Ruff format
+        run: ruff format --check src tests
+      - name: Mypy
+        run: mypy src
+
+  test:
+    name: 测试 (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+      - name: 安装依赖
+        run: pip install -e ".[dev,api]"
+      - name: 跑测试
+        run: |
+          pytest --cov=robot_agent --cov-report=term-missing \
+                 --cov-fail-under=75 --junitxml=junit.xml -q
+      - name: 覆盖率报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: |
+            .coverage
+            junit.xml
+          if-no-files-found: ignore
+
+  ros-import:
+    # ROS2 执行器在 CI 里装不了 rclpy，但必须保证「缺依赖时能正常导入」——
+    # 否则 mock 模式会被一个 import 错误直接拖死。
+    name: ROS2 执行器降级导入
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - name: 无 rclpy 时应抛 ExecutorUnavailableError 而非 ImportError
+        run: |
+          python - <<'PY'
+          from robot_agent.skills.ros2 import ROS_AVAILABLE, RosBridge
+          from robot_agent.errors import ExecutorUnavailableError
+          assert ROS_AVAILABLE is False, "CI 环境不应有 rclpy"
+          try:
+              RosBridge()
+          except ExecutorUnavailableError as exc:
+              print("OK:", exc.message)
+          else:
+              raise SystemExit("应当抛出 ExecutorUnavailableError")
+          PY
+
+  docker:
+    name: 镜像构建
+    runs-on: ubuntu-latest
+    needs: [quality, test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: 构建镜像
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: robot-agent:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: 冒烟测试容器
+        run: |
+          docker run -d --name ra -p 8080:8080 robot-agent:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:8080/healthz > /dev/null; then break; fi
+            sleep 1
+          done
+          curl -fsS http://localhost:8080/healthz
+          curl -fsS -X POST http://localhost:8080/v1/tasks \
+            -H 'Content-Type: application/json' \
+            -d '{"instruction":"把红色方块推到左边","wait":true}' | tee /tmp/resp.json
+          grep -q '"status":"succeeded"' /tmp/resp.json
+          docker logs ra
+          docker rm -f ra

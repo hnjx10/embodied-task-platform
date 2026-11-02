@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: robot-agent-config
+  labels:
+    app.kubernetes.io/name: robot-agent
+data:
+  ROBOT_AGENT_ENV: "prod"
+  ROBOT_AGENT_LOG_JSON: "true"
+  ROBOT_AGENT_LOG_LEVEL: "INFO"
+  ROBOT_AGENT_EXECUTOR__BACKEND: "mock"
+  ROBOT_AGENT_STORAGE__URL: "sqlite:////var/lib/robot-agent/tasks.db"
+  ROBOT_AGENT_AUDIT__PATH: "/var/lib/robot-agent/audit/audit.jsonl"
+  ROBOT_AGENT_AUDIT__FSYNC: "true"
+  ROBOT_AGENT_API__PORT: "8080"
+  ROBOT_AGENT_CONFIG: "/app/config/production.yaml"

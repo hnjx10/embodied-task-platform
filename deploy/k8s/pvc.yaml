@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: robot-agent-data
+  labels:
+    app.kubernetes.io/name: robot-agent
+spec:
+  accessModes:
+    # SQLite 不支持多写者共享，必须是 ReadWriteOnce
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi

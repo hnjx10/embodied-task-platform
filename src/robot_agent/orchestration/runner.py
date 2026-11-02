@@ -255,6 +255,24 @@ class TaskRunner:
     async def purge(self) -> int:
         return await self.repo.purge_expired(self.settings.storage.retention_hours)
 
+    async def shutdown(self, timeout: float = 10.0) -> None:
+        """优雅关闭：等待在飞任务收尾，超时才取消。
+
+        直接关连接会让还在写库的后台任务抛 ``Cannot operate on a closed database``，
+        任务状态停在 running 成为「僵尸任务」。宁可多等几秒，也要让状态落到终态。
+        """
+        pending = [t for t in self._running.values() if not t.done()]
+        if not pending:
+            return
+        logger.info("shutdown_waiting_for_tasks", count=len(pending), timeout_s=timeout)
+        _done, still = await asyncio.wait(pending, timeout=timeout)
+        for task in still:
+            task.cancel()
+        if still:
+            await asyncio.gather(*still, return_exceptions=True)
+            logger.warning("shutdown_force_cancelled", count=len(still))
+        self._running.clear()
+
     # ------------------------------------------------------------------ 内部
 
     async def _require(self, task_id: str) -> TaskRecord:

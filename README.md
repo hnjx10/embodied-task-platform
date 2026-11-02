@@ -59,6 +59,30 @@ robot-agent run "把蓝色方块推到 (1.3, 1.3)"  # 已拦截 — 位于禁区
 robot-agent run "全速开到 (1.0, 1.0)"        # 自动降速至 0.22 m/s 后执行，修正入审计
 ```
 
+### HTTP 控制面
+
+```bash
+robot-agent serve                                  # 默认 127.0.0.1:8080
+open http://127.0.0.1:8080/docs                    # OpenAPI 交互文档
+
+curl -s -X POST localhost:8080/v1/tasks   -H 'Content-Type: application/json'   -d '{"instruction":"把红色方块推到左边","wait":true}' | jq '.status, .outcomes'
+```
+
+实时进度用 SSE：`GET /v1/tasks/{id}/events`　｜　完整接口见 [docs/API.md](docs/API.md)
+
+### HTTP 控制面
+
+```bash
+robot-agent serve                                  # 默认 127.0.0.1:8080
+open http://127.0.0.1:8080/docs                    # OpenAPI 交互文档
+
+curl -s -X POST localhost:8080/v1/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{"instruction":"把红色方块推到左边","wait":true}' | jq '.status, .outcomes'
+```
+
+实时进度用 SSE：`GET /v1/tasks/{id}/events`　｜　完整接口见 [docs/API.md](docs/API.md)
+
 ---
 
 ## 架构
@@ -225,6 +249,70 @@ mypy src
 
 ---
 
+## 部署
+
+三种形态，按现场条件选（详见 [deploy/README.md](deploy/README.md)）：
+
+```bash
+# 容器
+docker compose up -d
+
+# systemd（ROS2 场景推荐：避免 DDS 跨网络问题）
+sudo cp deploy/systemd/robot-agent.service /etc/systemd/system/ && sudo systemctl enable --now robot-agent
+
+# Kubernetes
+kubectl apply -f deploy/k8s/
+```
+
+生产启动护栏会在以下情况**直接拒绝启动**：关闭审计、对外监听却无 token、使用内存存储。
+
+---
+
+## 文档
+
+| 文档 | 内容 |
+|---|---|
+| [docs/API.md](docs/API.md) | HTTP 接口、SSE 事件、错误码、客户端示例 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 分层与依赖方向、并发模型、扩展点、失败隔离 |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | 部署、告警阈值、故障决策树、审计合规、备份恢复 |
+| [docs/adr/](docs/adr/) | 架构决策记录：为什么 fail-closed、为什么用 CAS |
+| [SECURITY.md](SECURITY.md) | 信任边界、已知限制、加固清单 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 开发流程、如何新增技能/策略 |
+
+---
+
+## 部署
+
+三种形态，按现场条件选（详见 [deploy/README.md](deploy/README.md)）：
+
+```bash
+# 容器
+docker compose up -d
+
+# systemd（ROS2 场景推荐：避免 DDS 跨网络问题）
+sudo cp deploy/systemd/robot-agent.service /etc/systemd/system/ && sudo systemctl enable --now robot-agent
+
+# Kubernetes
+kubectl apply -f deploy/k8s/
+```
+
+生产启动护栏会在以下情况**直接拒绝启动**：关闭审计、对外监听却无 token、使用内存存储。
+
+---
+
+## 文档
+
+| 文档 | 内容 |
+|---|---|
+| [docs/API.md](docs/API.md) | HTTP 接口、SSE 事件、错误码、客户端示例 |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 分层与依赖方向、并发模型、扩展点、失败隔离 |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | 部署、告警阈值、故障决策树、审计合规、备份恢复 |
+| [docs/adr/](docs/adr/) | 架构决策记录：为什么 fail-closed、为什么用 CAS |
+| [SECURITY.md](SECURITY.md) | 信任边界、已知限制、加固清单 |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | 开发流程、如何新增技能/策略 |
+
+---
+
 ## 已知限制
 
 诚实记录，而不是假装没有：
@@ -239,7 +327,7 @@ mypy src
 
 ## Roadmap
 
-- [ ] HTTP 控制面完善（SSE 实时进度、OpenAPI 文档）
+- [x] HTTP 控制面（任务 CRUD、SSE 实时进度、OpenAPI 文档、审批流）
 - [ ] MoveIt2 机械臂抓放（替换推箱）
 - [ ] Isaac Sim 执行器
 - [ ] OpenTelemetry 链路追踪

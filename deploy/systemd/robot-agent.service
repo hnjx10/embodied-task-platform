@@ -1,0 +1,45 @@
+[Unit]
+Description=robot-agent — LLM 机器人任务编排服务
+Documentation=https://github.com/hnjx10/gazebo-langgraph-demo
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=robot-agent
+Group=robot-agent
+WorkingDirectory=/opt/robot-agent
+# 环境变量单独放文件，避免密钥出现在 `systemctl cat` 输出里
+EnvironmentFile=-/etc/robot-agent/robot-agent.env
+Environment=ROBOT_AGENT_CONFIG=/opt/robot-agent/config/production.yaml
+ExecStart=/opt/robot-agent/venv/bin/robot-agent serve
+ExecReload=/bin/kill -HUP $MAINPID
+
+Restart=on-failure
+RestartSec=5s
+# 收到 SIGTERM 后给在飞任务 30s 收尾（应用内部等待 10s，留余量）
+TimeoutStopSec=30s
+KillSignal=SIGTERM
+
+# ---- 加固 ----
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictRealtime=true
+LockPersonality=true
+# 只有数据目录可写
+ReadWritePaths=/var/lib/robot-agent
+# ROS2 需要共享内存与网络
+# PrivateNetwork=false
+# IPCNamespacePath 不建议开启，DDS 发现依赖它
+
+LimitNOFILE=65535
+
+[Install]
+WantedBy=multi-user.target

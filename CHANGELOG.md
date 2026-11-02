@@ -25,14 +25,31 @@
 - **审计日志 v2**：哈希链防篡改、大小轮转、崩溃后自动续链、`audit verify` 校验命令。
 - **可观测性**：structlog JSON 日志（trace_id 上下文）、Prometheus 指标（未装则 no-op）。
 - **CLI**：`run` / `serve` / `tasks list|show` / `audit verify|tail` / `doctor` / `config` / `version`。
-- **测试**：116 个用例，覆盖策略边界、fail-closed、CAS 并发、哈希链篡改、CLI 退出码。
-- **质量门禁**：ruff（含 bandit/async/bugbear 规则）+ ruff format + mypy strict-ish。
+- **HTTP 控制面**（FastAPI）：任务提交/查询/列表、审批/驳回/取消、SSE 实时事件、
+  `/healthz` `/readyz` `/metrics`、Bearer 鉴权、X-Trace-Id 透传、OpenAPI 文档。
+  纯 ASGI 中间件避免 SSE 被缓冲；异常统一映射为稳定错误码。
+- **优雅关闭**：先等在飞任务收尾（默认 10s）再释放资源，避免任务状态卡在 running。
+- **容器化**：多阶段 Dockerfile（非 root、只读根文件系统、HEALTHCHECK）、docker-compose。
+- **部署清单**：systemd unit（加固项齐全）、K8s Deployment/Service/PVC/ServiceMonitor。
+- **文档**：API 参考、架构说明（含失败隔离矩阵）、运维 Runbook（故障决策树 + 告警阈值）、
+  两份 ADR（fail-closed、状态 CAS）、SECURITY 信任边界、CONTRIBUTING 扩展指南。
+- **测试**：160 个用例，覆盖策略边界、fail-closed、CAS 并发、哈希链篡改、CLI 退出码、
+  LLM 重试/熔断/降级、HTTP 接口与 SSE、优雅关闭。
+- **质量门禁**：ruff（含 bandit/async/bugbear 规则）+ ruff format + mypy + GitHub Actions
+  （3.10/3.11/3.12 矩阵、ROS 降级导入检查、镜像构建与容器冒烟）。
 
 ### Changed
 
 - 规则规划器改为**括号感知分句**，修复坐标 `(1.0, 0.5)` 被逗号切断的问题。
 - 方向目标点收缩 20% 边距，避免目标贴住物理围挡。
 - 日志输出改到 **stderr**，stdout 留给结构化输出（`--json` 可被 `jq` 直接消费）。
+
+### Added (测试与工程化)
+
+- `tests/` 分三层：`unit`（策略/规则/技能/审计/存储/LLM）、`integration`（图/API）、`e2e`（CLI）。
+- `Makefile` 提供 install/test/check/run/doctor 等常用命令。
+- `config/default.yaml` 与 `config/production.yaml` 双环境示例；`.env.example` 说明全部变量。
+- `pre-commit` 钩子：ruff、mypy、单元测试（pre-push）。
 
 ### Fixed
 
