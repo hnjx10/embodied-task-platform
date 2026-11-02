@@ -25,7 +25,9 @@ from pydantic_settings import (
     SettingsConfigDict,
 )
 
-try:  # YAML 是可选配置源，未安装时静默跳过
+from robot_agent.errors import ConfigurationError
+
+try:  # YAML 是可选配置源，未安装时读取配置文件会显式报错（见 YamlConfigSource）
     import yaml
 except ImportError:  # pragma: no cover
     yaml = None  # type: ignore[assignment]
@@ -197,13 +199,19 @@ class YamlConfigSource(PydanticBaseSettingsSource):
         return None, field_name, False
 
     def __call__(self) -> dict[str, Any]:
-        if self._path is None or yaml is None:
+        if self._path is None:
             return {}
+        # 显式/自动发现的配置文件读不了必须炸：静默退回默认值会让人以为
+        # 限速、禁区和审批策略都已生效，实际上一条都没加载。
+        if yaml is None:
+            raise ConfigurationError(
+                f"需要读取配置文件 {self._path}，但未安装 PyYAML（pip install 'robot-agent[api]'）"
+            )
         if not self._path.exists():
-            return {}
+            raise ConfigurationError(f"配置文件不存在: {self._path}")
         raw = yaml.safe_load(self._path.read_text(encoding="utf-8")) or {}
         if not isinstance(raw, dict):
-            raise ValueError(f"配置文件顶层必须是映射: {self._path}")
+            raise ConfigurationError(f"配置文件顶层必须是映射: {self._path}")
         return raw
 
 
@@ -296,9 +304,9 @@ def _resolve_config_path() -> Path | None:
 
 def load_settings(**overrides: Any) -> Settings:
     """构造配置对象。异常统一转成 :class:`ConfigurationError`，便于启动阶段快速失败。"""
-    from robot_agent.errors import ConfigurationError
-
     try:
         return Settings(**overrides)
+    except ConfigurationError:
+        raise
     except Exception as exc:  # pydantic 的 ValidationError 信息较长，收敛成一句
         raise ConfigurationError(f"配置非法: {exc}", cause=exc) from exc

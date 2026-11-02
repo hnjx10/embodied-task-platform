@@ -27,6 +27,11 @@ except ImportError:  # pragma: no cover
     class _Null:
         """最小 no-op 桩，签名与 prometheus_client 对象一致。"""
 
+        def __init__(self, *_: Any, **__: Any) -> None:
+            # 必须吞掉构造参数：模块级 Counter(...) / Gauge(...) 会带着
+            # name、documentation、labelnames 这些实参来实例化它。
+            pass
+
         def labels(self, *_: Any, **__: Any) -> _Null:
             return self
 
@@ -49,8 +54,7 @@ except ImportError:  # pragma: no cover
         pass
 
     class Histogram(_Null):  # type: ignore[no-redef]
-        def __init__(self, *_: Any, **__: Any) -> None:
-            pass
+        pass
 
     class REGISTRY:  # type: ignore[no-redef]
         pass

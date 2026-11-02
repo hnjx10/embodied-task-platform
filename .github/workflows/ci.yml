@@ -118,6 +118,59 @@ jobs:
           print(f"OK: {len(pkgs)} 个包，{len(launches)} 个 launch 文件")
           PY
 
+  core-import:
+    # 只装核心依赖：CLI 是产品的默认入口，必须在没有 fastapi/uvicorn/prometheus 的
+    # 环境里也能 import 并跑起来。曾经漏声明 typer，本地因为早已装好而毫无察觉。
+    name: 最小依赖可导入
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: 只装核心依赖
+        run: pip install -e .
+      - name: 核心模块全部可导入（不含 CLI 之外的 api 层）
+        run: |
+          python - <<'PY'
+          import importlib
+
+          modules = [
+              "robot_agent",
+              "robot_agent.cli",
+              "robot_agent.config",
+              "robot_agent.errors",
+              "robot_agent.logging",
+              "robot_agent.metrics",
+              "robot_agent.audit",
+              "robot_agent.factory",
+              "robot_agent.planner.pipeline",
+              "robot_agent.safety.gate",
+              "robot_agent.orchestration.runner",
+              "robot_agent.skills.mock",
+              "robot_agent.skills.ros2",
+              "robot_agent.storage.sqlite",
+          ]
+          for name in modules:
+              importlib.import_module(name)
+              print("OK", name)
+          PY
+      - name: CLI 可用（--help 与 doctor）
+        run: |
+          robot-agent --help
+          robot-agent doctor || true   # doctor 只做自检，退出码可能非 0，不能当门禁
+      - name: 缺 prometheus-client 时指标降级为 no-op
+        run: |
+          python - <<'PY'
+          from robot_agent import metrics
+          assert metrics.PROMETHEUS_AVAILABLE is False, "核心依赖里不该有 prometheus-client"
+          metrics.TASKS_TOTAL.labels(status="x").inc()
+          payload, _ = metrics.render_metrics()
+          assert payload == b""
+          print("OK: no-op 降级可用")
+          PY
+
   docker:
     name: 镜像构建
     runs-on: ubuntu-latest

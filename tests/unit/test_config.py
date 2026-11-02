@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from pydantic import ValidationError
 
@@ -89,3 +91,43 @@ def test_blank_api_key_treated_as_missing() -> None:
     settings = Settings(llm={"api_key": "   "})
     assert settings.llm.api_key is None
     assert settings.llm.configured is False
+
+
+def test_yaml_config_is_applied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = tmp_path / "custom.yaml"
+    config.write_text("safety:\n  max_linear_speed: 0.18\n", encoding="utf-8")
+    monkeypatch.setenv("ROBOT_AGENT_CONFIG", str(config))
+
+    settings = load_settings()
+    assert settings.safety.max_linear_speed == pytest.approx(0.18)
+
+
+def test_env_wins_over_yaml(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = tmp_path / "custom.yaml"
+    config.write_text("safety:\n  max_linear_speed: 0.18\n", encoding="utf-8")
+    monkeypatch.setenv("ROBOT_AGENT_CONFIG", str(config))
+    monkeypatch.setenv("ROBOT_AGENT_SAFETY__MAX_LINEAR_SPEED", "0.20")
+
+    settings = load_settings()
+    assert settings.safety.max_linear_speed == pytest.approx(0.20)
+
+
+def test_explicit_missing_config_file_fails_loudly(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """显式指定的配置文件读不到必须报错——静默退回默认值等于悄悄关掉安全策略。"""
+    monkeypatch.setenv("ROBOT_AGENT_CONFIG", str(tmp_path / "absent.yaml"))
+
+    with pytest.raises(ConfigurationError) as exc:
+        load_settings()
+    assert "不存在" in str(exc.value)
+
+
+def test_non_mapping_yaml_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    config = tmp_path / "bad.yaml"
+    config.write_text("- 1\n- 2\n", encoding="utf-8")
+    monkeypatch.setenv("ROBOT_AGENT_CONFIG", str(config))
+
+    with pytest.raises(ConfigurationError) as exc:
+        load_settings()
+    assert "映射" in str(exc.value)

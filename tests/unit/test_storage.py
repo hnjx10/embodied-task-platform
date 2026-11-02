@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -109,7 +109,9 @@ async def test_save_missing_task_raises(repo) -> None:
 
 
 async def test_purge_expired(repo) -> None:
-    old = TaskRecord(instruction="old", created_at=datetime.now(UTC) - timedelta(hours=100))
+    old = TaskRecord(
+        instruction="old", created_at=datetime.now(timezone.utc) - timedelta(hours=100)
+    )
     await repo.create(old)
     await repo.create(TaskRecord(instruction="new"))
     deleted = await repo.purge_expired(retention_hours=72)

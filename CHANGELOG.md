@@ -33,10 +33,12 @@
 - **部署清单**：systemd unit（加固项齐全）、K8s Deployment/Service/PVC/ServiceMonitor。
 - **文档**：API 参考、架构说明（含失败隔离矩阵）、运维 Runbook（故障决策树 + 告警阈值）、
   两份 ADR（fail-closed、状态 CAS）、SECURITY 信任边界、CONTRIBUTING 扩展指南。
-- **测试**：160 个用例，覆盖策略边界、fail-closed、CAS 并发、哈希链篡改、CLI 退出码、
+- **测试**：167 个用例，覆盖策略边界、fail-closed、CAS 并发、哈希链篡改、CLI 退出码、
   LLM 重试/熔断/降级、HTTP 接口与 SSE、优雅关闭。
 - **质量门禁**：ruff（含 bandit/async/bugbear 规则）+ ruff format + mypy + GitHub Actions
   （3.10/3.11/3.12 矩阵、ROS 降级导入检查、镜像构建与容器冒烟）。
+- **CI 新增两道防线**：「最小依赖可导入」job 只装核心依赖验证 CLI 与指标 no-op 降级；
+  「ROS2 包结构与语法」校验 `package.xml` / `resource` 标记 / launch 入口。
 - **ROS2 包**：`ros2_ws/src/robot_agent_ros2` 采用标准 `ament_python` 结构，
   `ros2 launch robot_agent_ros2 demo.launch.py` 一条命令拉起世界与三个方块；
   `spawn_cubes` 由 `TimerAction` 延时 5s，规避 `/spawn_entity` 服务未就绪的竞态。
@@ -54,6 +56,13 @@
 
 ### Fixed
 
+- **CI 三处失败**（44cefd7）：`typer` 未声明为依赖导致测试环境 collection 失败；
+  `tests/unit/test_storage.py` 仍用 3.11+ 的 `datetime.UTC`；无 `prometheus-client` 时
+  no-op 桩不吞构造参数，`Counter(...)` 直接 `TypeError` 把 mock 模式拖死。
+- **依赖分层纠正**：`aiosqlite` / `pyyaml` 移入核心依赖（CLI 默认就要用），
+  `fastapi` / `uvicorn` / `prometheus-client` 留在 `api` extra。
+- **配置文件读不到不再静默忽略**：显式指定或自动发现的 YAML 缺失、非映射、缺 PyYAML
+  时抛 `ConfigurationError`——否则限速与禁区策略没加载，人还以为生效了。
 - `datetime.UTC` 仅 3.11+ 可用，改用 `timezone.utc` 以支持 3.10。
 - structlog 保留字段 `event` 作为 kwargs 导致 `TypeError`。
 - CLI `standalone_mode=False` 时退出码被丢弃，导致失败任务返回 0。
