@@ -136,11 +136,62 @@ class Skill(ABC):
             parts.append(f"{field_name}{mark}: {type_name}")
         return f"{cls.name}({', '.join(parts)}): {cls.description}"
 
+    @classmethod
+    def tool_schema(cls) -> dict[str, Any]:
+        """导出 OpenAI 兼容的 function 定义，供 Function Calling 使用。
+
+        与 :meth:`signature` 的区别：签名是给人（和纯文本 prompt）看的一行摘要，
+        这里是给模型看的**完整 JSON Schema**——包含类型、枚举、必填项与字段说明。
+        模型据此填参数，``extra="forbid"`` 又让多填的参数被拒，两头都收紧。
+
+        ``$defs`` / ``$ref`` 必须展开：部分 OpenAI 兼容网关对嵌套引用支持不一致，
+        会直接忽略带 ``$ref`` 的参数，模型于是「看不到」例如 ``patrol.waypoints``
+        内部结构，只能瞎猜。展开成内联是最保险的做法。
+        """
+        raw = cls.params_model.model_json_schema()
+        parameters = _inline_refs(raw, raw.get("$defs", {}))
+        parameters.pop("$defs", None)
+        parameters.pop("title", None)
+        parameters.setdefault("type", "object")
+        return {
+            "type": "function",
+            "function": {
+                "name": cls.name,
+                "description": cls.description,
+                "parameters": parameters,
+            },
+        }
+
 
 def _compact_errors(exc: ValidationError) -> str:
     return "; ".join(
         f"{'.'.join(str(p) for p in err['loc'])}: {err['msg']}" for err in exc.errors()
     )
+
+
+def _inline_refs(node: Any, defs: dict[str, Any]) -> Any:
+    """把 pydantic 生成的 ``$ref`` 递归展开成内联结构，并清掉纯展示用的 ``title``。
+
+    只处理本模型自己产出的 ``#/$defs/X`` 形式；遇到指不到目标的引用原样保留，
+    宁可让网关报错，也不静默丢掉字段——丢掉字段的后果是模型填错参数。
+    """
+    if isinstance(node, list):
+        return [_inline_refs(item, defs) for item in node]
+    if not isinstance(node, dict):
+        return node
+
+    ref = node.get("$ref")
+    if isinstance(ref, str) and ref.startswith("#/$defs/"):
+        target = defs.get(ref[len("#/$defs/") :])
+        if isinstance(target, dict):
+            merged = {k: v for k, v in node.items() if k != "$ref"}
+            return _inline_refs({**target, **merged}, defs)
+
+    return {
+        key: _inline_refs(value, defs)
+        for key, value in node.items()
+        if key != "title"  # pydantic 附带的类名/字段名，对模型是噪音
+    }
 
 
 class SkillRegistry:
@@ -213,8 +264,16 @@ class SkillRegistry:
         return subset
 
     def prompt_description(self) -> str:
-        """给 LLM 规划器看的技能清单。"""
+        """给 LLM 规划器看的技能清单（纯文本模式用）。"""
         return "\n".join(skill.signature() for skill in self.all())
+
+    def tool_schemas(self) -> list[dict[str, Any]]:
+        """Function Calling 的 ``tools`` 数组。顺序按技能名稳定排序。
+
+        顺序稳定不是洁癖：同一份输入每次请求的 tools 数组一致，上游的
+        prompt 缓存（DeepSeek / Qwen 都有）才能命中，token 成本与时延都会降。
+        """
+        return [skill.tool_schema() for skill in self.all()]
 
     def __len__(self) -> int:
         return len(self._skills)

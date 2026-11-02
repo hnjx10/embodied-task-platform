@@ -17,6 +17,7 @@ from robot_agent.config import Settings
 from robot_agent.errors import ExecutorUnavailableError
 from robot_agent.logging import get_logger
 from robot_agent.orchestration.events import EventBus
+from robot_agent.orchestration.execution_lock import build_lock
 from robot_agent.orchestration.executor import StepExecutor
 from robot_agent.orchestration.graph import AgentComponents, build_graph, build_resume_graph
 from robot_agent.orchestration.maintenance import PurgeScheduler
@@ -78,7 +79,7 @@ def build_skill_backend(
 
     from robot_agent.skills.mock import build_mock_registry
 
-    registry, world = build_mock_registry(settings.arena)
+    registry, world = build_mock_registry(settings.arena, image_dir=settings.executor.image_dir)
     logger.info("backend_ready", backend="mock", skills=registry.names())
     return registry, world, lambda: None
 
@@ -117,14 +118,23 @@ async def build_assembly(settings: Settings, *, force_rules: bool = False) -> As
         logger.warning("storage_ephemeral", url=settings.storage.url)
 
     events = EventBus(max_subscribers_per_task=settings.api.max_sse_subscribers)
+    device_lock = build_lock(settings.lock)
+    if settings.lock.backend != "none":
+        logger.info(
+            "device_lock_ready",
+            backend=settings.lock.backend,
+            robot_id=settings.robot_id,
+            ttl_s=settings.lock.ttl_s,
+        )
     runner = TaskRunner(
         settings=settings,
         repository=repository,  # type: ignore[arg-type]
         events=events,
         audit=audit,
-        graph=build_graph(components),
-        resume_graph=build_resume_graph(components),
+        graph=build_graph(components, approval_mode=settings.approval_mode),
+        resume_graph=build_resume_graph(components, approval_mode=settings.approval_mode),
         executor=executor,
+        device_lock=device_lock,
     )
     purger = PurgeScheduler(runner, settings.storage.purge_interval_s)
 
@@ -134,6 +144,7 @@ async def build_assembly(settings: Settings, *, force_rules: bool = False) -> As
         repository.close,
         backend_close,
         purger.stop,
+        device_lock.aclose,
     ]
 
     return Assembly(

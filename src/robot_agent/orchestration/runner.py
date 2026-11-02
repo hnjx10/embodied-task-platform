@@ -1,12 +1,17 @@
 """任务运行器：把「提交 → 执行 → 审批 → 收尾」的生命周期收口到一处。
 
-并发模型：
+并发模型是三层的，每层解决一个不同的问题：
 
-* 任务级并发由 ``max_concurrent_tasks`` 限制（HTTP 层多个请求可同时进来）；
-* **物理动作串行**由 :class:`asyncio.Semaphore` 强制为 1——一台机器人同一时刻
+* ``_task_semaphore``：任务级并发（HTTP 层多个请求可同时进来），可调；
+* ``_motion_semaphore``：**进程内**物理动作串行，恒为 1——一台机器人同一时刻
   只能执行一个动作序列，这是物理约束而不是性能取舍；
-* 图是同步的（技能调用阻塞），用 ``asyncio.to_thread`` 把执行挪出事件循环，
-  避免卡住 HTTP 健康检查。
+* ``_device_lock``：**跨进程**设备互斥。前两层只在单个 Python 进程内有效，
+  一旦部署两个副本、或者 CLI 与 HTTP 服务并存，两个进程会各自认为自己独占
+  机器人，同时往 ``/cmd_vel`` 发指令。这一层就是补这个缺口，默认关闭
+  （``lock.backend=none``），因为单实例部署加它是纯开销。
+
+图是同步的（技能调用阻塞），用 ``asyncio.to_thread`` 把执行挪出事件循环，
+避免卡住 HTTP 健康检查。
 """
 
 from __future__ import annotations
@@ -21,13 +26,20 @@ from robot_agent.config import Settings
 from robot_agent.domain.plan import PlanStep, StepOutcome
 from robot_agent.domain.state import TaskRecord, new_task_id, utcnow
 from robot_agent.errors import (
+    DeviceBusyError,
     RobotAgentError,
     TaskConflictError,
     TaskNotFoundError,
 )
 from robot_agent.logging import get_logger
 from robot_agent.orchestration.events import EventBus, TaskEvent
-from robot_agent.orchestration.graph import initial_state, record_task_metrics
+from robot_agent.orchestration.execution_lock import ExecutionLock, NullLock
+from robot_agent.orchestration.graph import (
+    NATIVE_INTERRUPT,
+    Command,
+    initial_state,
+    record_task_metrics,
+)
 from robot_agent.storage.base import TaskRepository
 
 logger = get_logger(__name__)
@@ -36,6 +48,31 @@ logger = get_logger(__name__)
 def _normalize_instruction(text: str) -> str:
     """幂等比较时忽略首尾与连续空白：仅排版差异不该算「另一条指令」。"""
     return " ".join(text.split())
+
+
+def _interrupted(result: Any) -> bool:
+    """图是因为 ``interrupt()`` 停下的吗。"""
+    return isinstance(result, dict) and bool(result.get("__interrupt__"))
+
+
+def _as_awaiting(final: dict[str, Any]) -> dict[str, Any]:
+    """把 LangGraph 的原生中断翻译成与 persist 模式一致的状态。
+
+    两种挂起方式对外必须长一个样：上层（API / CLI）看到的是 ``awaiting_approval``，
+    而不是「图停了，你自己去读 ``__interrupt__``」。把框架细节挡在这一层，
+    是这里唯一要做的事。
+    """
+    reasons: list[str] = []
+    for item in final.get("__interrupt__") or []:
+        value = getattr(item, "value", item)
+        if isinstance(value, dict):
+            reasons.extend(str(reason) for reason in value.get("reasons", []))
+    return {
+        **{key: value for key, value in final.items() if key != "__interrupt__"},
+        "status": "awaiting_approval",
+        "requires_approval": True,
+        "approval_reasons": reasons,
+    }
 
 
 class TaskRunner:
@@ -51,6 +88,7 @@ class TaskRunner:
         graph: Any,
         resume_graph: Any,
         executor: Any = None,
+        device_lock: ExecutionLock | None = None,
     ) -> None:
         self.settings = settings
         self.repo = repository
@@ -59,6 +97,7 @@ class TaskRunner:
         self.graph = graph
         self.resume_graph = resume_graph
         self.executor = executor
+        self.device_lock = device_lock or NullLock()
         self._motion_semaphore = asyncio.Semaphore(1)
         self._task_semaphore = asyncio.Semaphore(settings.api.max_concurrent_tasks)
         self._running: dict[str, asyncio.Task[Any]] = {}
@@ -143,7 +182,19 @@ class TaskRunner:
 
         try:
             async with self._task_semaphore, self._motion_semaphore:
-                final = await asyncio.to_thread(self.graph.invoke, state)
+                final = await self._invoke_graph(state, task_id)
+        except DeviceBusyError as exc:
+            logger.warning("task_device_busy", task_id=task_id, robot_id=self.settings.robot_id)
+            return await self._finalize(
+                record,
+                status="failed",
+                report=(
+                    f"设备 {self.settings.robot_id} 正被其它执行者占用，任务未启动。"
+                    "这种情况通常稍后重试即可，不要当成指令本身有问题。"
+                ),
+                error={"code": exc.code, "message": exc.message},
+                duration=time.perf_counter() - started,
+            )
         except Exception as exc:
             logger.exception("task_crashed", task_id=task_id)
             return await self._finalize(
@@ -161,11 +212,84 @@ class TaskRunner:
                 self.executor.unregister_callback(task_id)
             self._running.pop(task_id, None)
 
+    async def _wake_suspended(self, task_id: str, *, approved: bool) -> Any | None:
+        """唤醒停在断点上的图，返回最终状态。没有断点时返回 None。
+
+        判据是 ``snapshot.next``：非空说明图停在某个节点之前，即处于中断态。
+        这比「配置是不是 interrupt 模式」更准——同一个进程里可能两种模式的任务
+        并存（配置热更、或重启后 MemorySaver 已清空）。
+        """
+        if Command is None or not NATIVE_INTERRUPT:
+            return None
+
+        config = {"configurable": {"thread_id": task_id}}
+        try:
+            snapshot = await asyncio.to_thread(self.graph.get_state, config)
+        except Exception:
+            # 无 checkpointer 时 get_state 会抛，属于正常情况
+            return None
+        if not getattr(snapshot, "next", None):
+            return None
+
+        try:
+            return await asyncio.to_thread(
+                self.graph.invoke, Command(resume={"approved": approved}), config
+            )
+        except Exception as exc:
+            logger.warning("native_resume_failed", task_id=task_id, error=str(exc))
+            return None
+
+    async def _resume_or_rebuild(self, state: Any, task_id: str) -> Any:
+        """优先从原生中断点恢复，没有断点时重建状态续跑。
+
+        interrupt 模式下进程重启会丢掉 MemorySaver 里的 checkpoint，此时
+        ``get_state`` 拿不到 next 节点。必须回落到重建路径，否则任务会卡死在
+        「已批准但永远不会执行」——这是所有基于内存 checkpointer 的方案都要
+        处理的失效模式。
+        """
+        resumed = await self._wake_suspended(task_id, approved=True)
+        if resumed is not None:
+            logger.info("task_resumed_from_interrupt", task_id=task_id)
+            return _as_awaiting(resumed) if _interrupted(resumed) else resumed
+        return await self._invoke_graph(state, task_id, resume=True)
+
     async def execute_background(self, task_id: str) -> asyncio.Task[Any]:
         """提交到后台执行，返回 asyncio.Task 便于测试等待或取消。"""
         task = asyncio.create_task(self.execute(task_id), name=f"task:{task_id}")
         self._running[task_id] = task
         return task
+
+    async def _invoke_graph(self, state: Any, task_id: str, *, resume: bool = False) -> Any:
+        """在设备锁保护下跑图。
+
+        锁要包住**整次执行**而不是每个技能：机器人是有状态的，「A 走一半、
+        B 走一半、A 再接着走」这种交错在物理世界里不成立——中间位姿已经被
+        另一个任务改掉了，而两边都以为自己还在原来的位置。
+
+        拿不到锁时抛 :class:`DeviceBusyError` 而不是排队等待：阻塞会把
+        HTTP 请求和事件循环一起挂住，而且等多久才能拿到是不确定的。
+        交给调用方退避重试，语义更清楚。
+        """
+        robot_id = self.settings.robot_id
+        token = await self.device_lock.acquire(robot_id, ttl_s=self.settings.lock.ttl_s)
+        if token is None:
+            raise DeviceBusyError(
+                f"设备 {robot_id} 已被其它执行者持有",
+                details={"robot_id": robot_id, "task_id": task_id},
+            )
+        try:
+            graph = self.resume_graph if resume else self.graph
+            outcome = await asyncio.to_thread(
+                graph.invoke, state, {"configurable": {"thread_id": task_id}}
+            )
+        finally:
+            # 释放失败不覆盖执行结果：任务已经跑完，锁过期是次生问题，
+            # 由 TTL 兜底即可，不该让一次成功的任务因为解锁失败变成 failed。
+            await self.device_lock.release(robot_id, token)
+
+        if _interrupted(outcome):
+            return _as_awaiting(outcome)
+        return outcome
 
     # ------------------------------------------------------------------ 审批
 
@@ -205,7 +329,19 @@ class TaskRunner:
 
         try:
             async with self._task_semaphore, self._motion_semaphore:
-                final = await asyncio.to_thread(self.resume_graph.invoke, state)
+                final = await self._resume_or_rebuild(state, task_id)
+        except DeviceBusyError as exc:
+            logger.warning("task_device_busy", task_id=task_id, robot_id=self.settings.robot_id)
+            return await self._finalize(
+                record,
+                status="failed",
+                report=(
+                    f"设备 {self.settings.robot_id} 正被其它执行者占用，续跑未启动。"
+                    "任务仍处于已批准状态，稍后重新批准即可。"
+                ),
+                error={"code": exc.code, "message": exc.message},
+                duration=time.perf_counter() - started,
+            )
         except Exception as exc:
             logger.exception("task_resume_crashed", task_id=task_id)
             return await self._finalize(
@@ -236,6 +372,9 @@ class TaskRunner:
         if not ok:
             raise TaskConflictError(f"任务 {task_id} 状态已被其它操作修改")
         self.audit.record("task_rejected", {"reason": reason}, task_id=task_id)
+        # interrupt 模式下图还停在断点上：必须唤醒它走 blocked 分支，
+        # 否则 checkpoint 里会留着一条永不结束的线程，内存只增不减。
+        await self._wake_suspended(task_id, approved=False)
         self.events.publish(TaskEvent(task_id, "status", {"status": "blocked", "reason": reason}))
         self.events.close(task_id)
         return await self._require(task_id)

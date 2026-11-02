@@ -8,7 +8,7 @@
 经安全闸门校验后驱动执行器完成任务，全过程可审计、可观测、可人工接管。
 
 不是「跑一次 demo 的脚本」，而是按生产标准组织的服务：
-**15 个技能 · 9 条安全策略 · 82 条用例的安全评测集 · 289 个测试 · 分层依赖由 CI 静态校验**。
+**21 个技能 · 7 条安全策略 · 82 条用例的安全评测集 · 347 个测试 · 分层依赖由 CI 静态校验**。
 
 ## 30 秒验证
 
@@ -190,7 +190,7 @@ src/robot_agent/
 │   └── gate.py            #   策略链执行器
 ├── skills/                # 能力层
 │   ├── base.py            #   Skill ABC + 注册表
-│   ├── params.py          #   15 个技能的参数契约（唯一事实源）
+│   ├── params.py          #   21 个技能的参数契约（唯一事实源）
 │   ├── mock.py            #   mock 执行器（确定性世界模型）
 │   └── ros2.py            #   ROS2 执行器（cmd_vel / odom / 夹爪）
 ├── evaluation/            # 评测层：拦不拦得住，用数据说话
@@ -215,16 +215,21 @@ ros2_ws/src/robot_agent_ros2/     # ament_python 包：世界启动 + 方块生�
 
 ## 技能库
 
-15 个技能，mock 与 ROS2 两个后端**实现同一组名字与参数**——
+21 个技能，mock 与 ROS2 两个后端**实现同一组名字与参数**——
 `tests/unit/test_skills.py::test_mock_and_ros2_share_skill_names` 守着这条约定，
 任何一边漏实现都会在 CI 上直接变红。
 
-参数 schema 集中在 `skills/params.py`：它同时喂给 LLM 的函数描述、闸门的参数校验、
+参数 schema 集中在 `skills/params.py`：它同时喂给 LLM 的 `tools` 定义、闸门的参数校验、
 执行器的入参，三处必须看到同一份契约，否则会出现「模型按 schema 生成的调用被闸门拒绝」。
+
+**技能以 Function Calling 的方式交给模型**：`SkillRegistry.tool_schemas()` 把每个技能的
+pydantic 模型导出成 OpenAI 兼容的 `tools` 数组，模型返回 `tool_calls` 而不是自己写 JSON。
+`$ref` 会被递归展开成内联结构——部分网关会忽略带 `$ref` 的参数，模型于是「看不到」
+`patrol.waypoints` 的内部结构，只能瞎猜。
 
 | 技能 | 参数 | 风险 | 说明 |
 |---|---|---|---|
-| `goto_point` | x, y, speed | low | 导航到绝对坐标（odom 闭环比例控制） |
+| `goto_point` | x, y, speed | low | 导航到绝对坐标（Nav2 Action，不可用时回退 odom 闭环） |
 | `move_relative` | dx, dy, speed | low | 相对位移 |
 | `rotate` | yaw_deg | low | 原地旋转，角速度闭环 |
 | `look_at` | x, y | low | 转向某点 |
@@ -238,10 +243,69 @@ ros2_ws/src/robot_agent_ros2/     # ament_python 包：世界启动 + 方块生�
 | `report_status` | — | low | 状态快照（位姿、夹爪、持物） |
 | `wait` | duration_s | low | 可被急停打断的等待 |
 | `set_speed` | max_speed | medium | 设置后续动作的速度上限 |
+| `stop` | — | low | 急停，速度归零 |
+| `dock` | — | medium | 回充，停在桩前 `dock_clearance` 处 |
+| `undock` | distance | low | 离开充电桩 |
+| `get_battery` | — | low | 电量百分比 |
+| `set_led` | color, brightness | low | 灯带，用于向现场人员表达状态 |
+| `capture_image` | label | low | 抓拍归档（label 走白名单正则） |
+| `reset_odom` | — | medium | 里程计归零（物理位置不变） |
+
+三个容易被问到的设计点：
+
+- **`dock` 的目标不是桩心**。充电桩本身是禁区，开向桩心等于让机器人往禁区里钻，
+  会被自己的 `GeofencePolicy` 拦下。所以停靠点是「距桩心 `dock_clearance` 米」，
+  且必须大于禁区半径——`test_dock_stops_outside_charging_geofence` 断言了这层一致性。
+- **`capture_image.label` 用白名单正则**。它会被拼进文件名，不限制字符集等于把
+  `../../etc/passwd` 交给模型去填。
+- **`reset_odom` 不动物理位置**。它只把当前位姿定义为原点，之后 `get_pose` 返回相对
+  坐标——编码器清零，车没动。搞错这一点会让上层按旧基准算位置。
 | `stop` | — | low | 急停，不排队 |
 
 `risk="high"` 的技能由 `approval` 策略自动挂起等人工确认——安全行为来自**技能自己声明的属性**，
 不是配置里一条条列出来的。新增一个高危技能，审批行为自动生效，策略链零改动。
+
+---
+
+## 规划：意图路由 + Function Calling
+
+```
+指令 ──► router ──► planner ──► screen ──► execute ...
+         意图分类    tool_calls   策略链
+```
+
+**router**（`planner/router.py`）把指令粗分成 move / manipulate / query / system，
+结果进审计与日志。它**不拦截** `unknown`：关键词表必然漏词（「挪一下」「怼过去」
+都是合法指令），拿覆盖率有限的规则去拦，会把本来能完成的任务变成失败——比多花
+一次模型调用糟糕得多。规则只负责「能确定的时候省一次调用」，不确定就交给模型。
+
+**planner** 走 Function Calling：技能的 pydantic 参数模型导出成 `tools`，
+模型返回 `tool_calls`，一步一个函数调用，顺序即执行顺序。
+
+为什么不用「让模型输出 JSON 再解析」：
+
+| | 纯文本 JSON | Function Calling |
+|---|---|---|
+| 常见错误 | 多括号、少引号、混解释文字 | 语义错（该用 goto 用了 move_relative） |
+| 容错代码 | 写一堆正则去修 | 不需要 |
+| 容错的代价 | 把幻觉「修」成一个看着正常的危险动作 | — |
+| 参数校验 | 全靠自己 | provider 按 schema 先过一遍 |
+
+网关不支持 `tools` 时自动退回纯文本模式，且降级后的 prompt **重新带上技能清单**
+（tools 版 prompt 不含清单，直接拿去解析纯文本会让模型凭空编技能名）。降级次数
+进 `llm_tool_mode_total{mode="unsupported"}` ——「配置开了但实际没生效」是这类
+集成最常见的问题，没有这个指标就只能靠猜。
+
+**审批挂起有两种模式**（`approval_mode`）：
+
+| | `persist`（默认） | `interrupt` |
+|---|---|---|
+| 机制 | 状态置 `awaiting_approval`，批准后重建状态续跑 | `interrupt()` 原地挂起，`Command(resume=)` 恢复 |
+| 进程重启 | 不受影响（状态在 SQLite） | 丢 checkpoint，回落到重建路径 |
+| 适用 | 审批可能等几小时 | 单进程长驻、审批秒回 |
+
+两种模式对外都是 `awaiting_approval`，批准后都**重跑一次策略链**——人工批准
+不等于绕过闸门。
 
 ---
 
@@ -399,7 +463,7 @@ robot-agent run "把红色方块推到左边"
 ## 测试与质量门禁
 
 ```bash
-pytest                                              # 289 个用例
+pytest                                              # 347 个用例
 pytest --cov=robot_agent --cov-report=term-missing  # 覆盖率 81%
 ruff check src tests && ruff format --check src tests
 mypy src
@@ -430,6 +494,24 @@ kubectl apply -f deploy/k8s/
 ```
 
 生产启动护栏会在以下情况**直接拒绝启动**：关闭审计、对外监听却无 token、使用内存存储。
+
+**多副本部署必须开设备锁。** K8s 滚动发布时新旧 Pod 会短暂共存，两个进程各自
+认为自己在驱动机器人，同时往 `/cmd_vel` 发指令——表现成动作互相打断、位姿跳变，
+而两边日志都显示「执行成功」。
+
+```bash
+export ROBOT_AGENT_LOCK__BACKEND=redis
+export ROBOT_AGENT_LOCK__REDIS_URL=redis://redis:6379/0
+export ROBOT_AGENT_ROBOT_ID=tb3-burger-01      # 锁按 robot_id 分区
+```
+
+实现是 `SET key token NX PX ttl` 一条命令（拆成 `SETNX` + `EXPIRE` 两步的话，
+中间崩了就没有 TTL，锁永远不释放），释放走 Lua 比对 token 再删——锁超时后
+A 去释放，删掉的可能是 B 刚拿到的锁，互斥会静默失效。
+
+单实例部署保持 `lock.backend=none`：进程内信号量已经够了，加锁是纯开销。
+已知局限：不做自动续约，`ttl_s` 应大于单步执行超时；需要更长租期就得加
+watchdog 或换 Redlock。
 
 ---
 
@@ -468,7 +550,7 @@ kubectl apply -f deploy/k8s/
 - [x] HTTP 控制面（任务 CRUD、SSE 实时进度、OpenAPI 文档、审批流）
 - [x] ROS2 ament 包（一键拉起世界与方块）
 - [x] 安全评测集与 `eval` 命令（82 条用例、混淆矩阵、CI 门禁）
-- [x] 技能库扩到 15 个（双后端一致，含抓放与巡逻）
+- [x] 技能库扩到 21 个（双后端一致，含抓放、巡逻、能源与外设）
 - [ ] 澄清回合：把「开到哪里？」从拒绝变成一次追问（对应 `gap-vague-target`）
 - [ ] 相对位移与接近语义解析（对应 `gap-relative-distance`）
 - [ ] MoveIt2 机械臂抓放（替换当前的降级实现）

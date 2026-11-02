@@ -15,6 +15,8 @@ from __future__ import annotations
 import math
 import threading
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import ClassVar
 
 from robot_agent.config import ArenaSettings
@@ -26,6 +28,9 @@ from robot_agent.skills.base import (
     SkillResult,
 )
 from robot_agent.skills.params import (
+    CaptureImageParams,
+    DockParams,
+    GetBatteryParams,
     GetPoseParams,
     GotoParams,
     GripperParams,
@@ -36,23 +41,38 @@ from robot_agent.skills.params import (
     PlaceCubeParams,
     PushCubeParams,
     ReportStatusParams,
+    ResetOdomParams,
     RotateParams,
+    SetLedParams,
     SetSpeedParams,
     StopParams,
+    UndockParams,
     WaitParams,
 )
 
-#: mock 环境下的等待上限。真按 30s 睡会把测试拖成以分钟计，这里截断并如实标注。
+#: mock 环境下的等待上限。真按 30s 睡会把测试拖成分钟计，这里截断并如实标注。
 _WAIT_CAP_S = 0.2
+
+#: 每米行程消耗的电量（百分比）。数值不追求物理精确，只要求「会掉」——
+#: 电量永远 100% 的 mock 会让「低电量回充」这类依赖电量的逻辑永远测不到。
+_DRAIN_PER_METER = 0.4
 
 
 class MockWorld:
     """极简世界模型：记录机器人与方块位姿。带锁，可被多线程调用。"""
 
-    def __init__(self, arena: ArenaSettings | None = None, reach: float = 0.35) -> None:
+    def __init__(
+        self,
+        arena: ArenaSettings | None = None,
+        reach: float = 0.35,
+        *,
+        image_dir: str | None = None,
+    ) -> None:
         arena = arena or ArenaSettings()
         self.arena = arena
         self.reach = reach
+        #: 抓拍落盘目录。为 None 时只返回元数据——mock 没有相机，假装有才是撒谎。
+        self.image_dir = image_dir
         self._lock = threading.RLock()
         self.robot: tuple[float, float, float] = (0.0, 0.0, 0.0)
         self.cubes: dict[str, tuple[float, float]] = dict(arena.cube_layout)
@@ -60,12 +80,17 @@ class MockWorld:
         self.gripper_open: bool = True
         self.holding: str | None = None
         self.speed_cap: float | None = None
+        self.battery_pct: float = 100.0
+        self.led: tuple[str, float] = ("off", 0.0)
+        self.docked: bool = False
+        self.odom_origin: tuple[float, float, float] = (0.0, 0.0, 0.0)
         self.command_history: list[tuple[str, dict[str, float]]] = []
 
     # ------------------------------------------------------------------ 移动
 
     def move_robot(self, x: float, y: float, speed: float) -> None:
         with self._lock:
+            travel = math.hypot(x - self.robot[0], y - self.robot[1])
             yaw = (
                 math.atan2(y - self.robot[1], x - self.robot[0])
                 if (x, y) != self.robot[:2]
@@ -73,6 +98,8 @@ class MockWorld:
             )
             self.robot = (x, y, yaw)
             self.last_speed = speed
+            self.docked = False
+            self.battery_pct = max(0.0, self.battery_pct - travel * _DRAIN_PER_METER)
             self.command_history.append(("goto", {"x": x, "y": y, "speed": speed}))
 
     def move_relative(self, dx: float, dy: float, speed: float) -> tuple[float, float]:
@@ -141,12 +168,127 @@ class MockWorld:
             self.command_history.append(("place", {"x": x, "y": y}))
             return True, f"{color} 方块已放置到 ({x:.2f}, {y:.2f})"
 
+    # ------------------------------------------------------------------ 能源
+
+    def dock(self) -> tuple[float, float]:
+        """朝充电桩移动并停靠，停靠点由 ``arena.dock_clearance`` 决定。
+
+        停靠距离必须大于禁区半径：充电桩本身是禁区，机器人不能停在禁区里，
+        所以「停靠」是停在禁区外缘，不是一个点。这条约束若写错，
+        回充会被自己的安全策略拦下——这正是策略链值得存在的原因。
+        """
+        with self._lock:
+            cx, cy = self.arena.dock_pose
+            clearance = self.arena.dock_clearance
+            dx, dy = cx - self.robot[0], cy - self.robot[1]
+            dist = math.hypot(dx, dy)
+            if dist <= clearance:
+                # 已经比停靠距离更近：直接充电，不后退。后退等于朝桩里撞。
+                self.docked = True
+                self.battery_pct = 100.0
+                self.command_history.append(("dock", {"dist": round(dist, 3)}))
+                return (self.robot[0], self.robot[1])
+            ratio = (dist - clearance) / dist
+            target = (self.robot[0] + dx * ratio, self.robot[1] + dy * ratio)
+
+        self.move_robot(target[0], target[1], 0.1)
+        with self._lock:
+            # move_robot 会把 docked 置回 False，这里重新置位：停靠完成的语义
+            # 是「已接触充电触点」，不是「刚位移过」。
+            self.docked = True
+            self.battery_pct = 100.0
+            self.command_history.append(("dock", {"x": target[0], "y": target[1]}))
+        return target
+
+    def undock(self, distance: float) -> tuple[float, float]:
+        """离开充电桩，朝远离桩心方向移动 ``distance`` 米。"""
+        with self._lock:
+            cx, cy = self.arena.dock_pose
+            dx, dy = cx - self.robot[0], cy - self.robot[1]
+            norm = math.hypot(dx, dy)
+            if norm < 1e-6:
+                dx, dy, norm = -1.0, -1.0, math.sqrt(2.0)
+            target = (
+                self.robot[0] - dx / norm * distance,
+                self.robot[1] - dy / norm * distance,
+            )
+            was_docked = self.docked
+
+        self.move_robot(target[0], target[1], 0.1)
+        with self._lock:
+            self.docked = False
+            self.command_history.append(("undock", {"was_docked": 1.0 if was_docked else 0.0}))
+        return target
+
+    def battery(self) -> float:
+        with self._lock:
+            return round(self.battery_pct, 1)
+
+    # ------------------------------------------------------------------ 外设
+
+    def set_led(self, color: str, brightness: float) -> tuple[str, float]:
+        with self._lock:
+            current = (color, brightness)
+            self.led = current
+            self.command_history.append(("led", {"brightness": brightness}))
+            return current
+
+    def capture(self, label: str) -> dict[str, object]:
+        """抓拍一张图。
+
+        配了 ``image_dir`` 就写一张合法 PPM（纯文本、无需额外依赖、能被常见
+        图像库解析）；没配就只返回元数据并标记 ``persisted=False``——
+        mock 没有相机，返回一张假图比返回「没有图」更容易骗过调用方。
+        """
+        width = height = 8
+        pixels = [(i * 3) % 256 for i in range(width * height * 3)]
+        body = f"P3\n{width} {height}\n255\n" + " ".join(str(p) for p in pixels) + "\n"
+
+        payload: dict[str, object] = {
+            "label": label,
+            "width": width,
+            "height": height,
+            "format": "ppm",
+            "bytes": len(body.encode("ascii")),
+            "persisted": bool(self.image_dir),
+        }
+        if self.image_dir:
+            directory = Path(self.image_dir)
+            directory.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+            path = directory / f"{stamp}-{label}.ppm"
+            # newline="" 关掉文本模式的换行转换：Windows 默认把 \n 改写成 \r\n，
+            # 会让 PPM 头部的字节数与 Linux 下不一致（格式文件不该受平台影响）。
+            path.write_text(body, encoding="ascii", newline="")
+            payload["path"] = str(path)
+        else:
+            payload["path"] = ""
+
+        with self._lock:
+            self.command_history.append(("capture", {}))
+        return payload
+
+    def reset_odom(self) -> tuple[float, float, float]:
+        """把当前位置定义为里程计原点。
+
+        物理位置不变，只是之后 ``pose_of("robot")`` 返回相对坐标——真实机器人
+        重置 odom 就是这个语义（编码器计数清零，车没动）。
+        """
+        with self._lock:
+            origin = self.robot
+            self.odom_origin = origin
+            self.command_history.append(("reset_odom", {}))
+            return origin
+
     # ------------------------------------------------------------------ 状态
 
     def pose_of(self, target: str) -> tuple[float, float] | None:
         with self._lock:
             if target == "robot":
-                return (self.robot[0], self.robot[1])
+                return (
+                    self.robot[0] - self.odom_origin[0],
+                    self.robot[1] - self.odom_origin[1],
+                )
             return self.cubes.get(target)
 
     def set_speed_cap(self, value: float) -> None:
@@ -182,6 +324,10 @@ class MockWorld:
             self.gripper_open = True
             self.holding = None
             self.speed_cap = None
+            self.battery_pct = 100.0
+            self.led = ("off", 0.0)
+            self.docked = False
+            self.odom_origin = (0.0, 0.0, 0.0)
             self.command_history.clear()
 
 
@@ -453,9 +599,136 @@ class MockStopSkill(Skill):
         return SkillResult(ok=True, detail="已急停（速度归零）", data={"speed": 0.0})
 
 
-def build_mock_registry(arena: ArenaSettings | None = None) -> tuple[SkillRegistry, MockWorld]:
+# ------------------------------------------------------------ 能源 / 外设
+
+
+class MockDockSkill(Skill):
+    name: ClassVar[str] = "dock"
+    description: ClassVar[str] = "返回充电桩并停靠，充满电量"
+    params_model: ClassVar[type[SkillParams]] = DockParams
+    # 定级 medium 而不是 low：回充的目标点在充电桩附近，属于靠近禁区的动作，
+    # 现场有人时不应该被一条指令就触发。
+    risk: ClassVar[RiskLevel] = "medium"
+    is_motion: ClassVar[bool] = True
+
+    def __init__(self, world: MockWorld) -> None:
+        self.world = world
+
+    def run(self) -> SkillResult:  # type: ignore[override]
+        x, y = self.world.dock()
+        return SkillResult(
+            ok=True,
+            detail=f"已停靠充电桩 ({x:.2f}, {y:.2f})，电量 {self.world.battery():.1f}%",
+            data={"x": x, "y": y, "battery_pct": self.world.battery(), "docked": True},
+        )
+
+
+class MockUndockSkill(Skill):
+    name: ClassVar[str] = "undock"
+    description: ClassVar[str] = "离开充电桩，朝远离桩心方向移动指定距离"
+    params_model: ClassVar[type[SkillParams]] = UndockParams
+    risk: ClassVar[RiskLevel] = "low"
+    is_motion: ClassVar[bool] = True
+
+    def __init__(self, world: MockWorld) -> None:
+        self.world = world
+
+    def run(self, distance: float = 0.3) -> SkillResult:  # type: ignore[override]
+        x, y = self.world.undock(distance)
+        return SkillResult(
+            ok=True,
+            detail=f"已离开充电桩 {distance:.2f}m，当前位于 ({x:.2f}, {y:.2f})",
+            data={"x": x, "y": y, "docked": False},
+        )
+
+
+class MockGetBatterySkill(Skill):
+    name: ClassVar[str] = "get_battery"
+    description: ClassVar[str] = "读取电池剩余电量百分比"
+    params_model: ClassVar[type[SkillParams]] = GetBatteryParams
+    risk: ClassVar[RiskLevel] = "low"
+
+    def __init__(self, world: MockWorld) -> None:
+        self.world = world
+
+    def run(self) -> SkillResult:  # type: ignore[override]
+        level = self.world.battery()
+        low = level < 20.0
+        return SkillResult(
+            ok=True,
+            detail=f"电量 {level:.1f}%" + ("（偏低，建议回充）" if low else ""),
+            data={"battery_pct": level, "low": low},
+        )
+
+
+class MockSetLedSkill(Skill):
+    name: ClassVar[str] = "set_led"
+    description: ClassVar[str] = "设置机身灯带颜色与亮度，用于向现场人员表达状态"
+    params_model: ClassVar[type[SkillParams]] = SetLedParams
+    risk: ClassVar[RiskLevel] = "low"
+
+    def __init__(self, world: MockWorld) -> None:
+        self.world = world
+
+    def run(self, color: str, brightness: float = 1.0) -> SkillResult:  # type: ignore[override]
+        actual, level = self.world.set_led(color, brightness)
+        return SkillResult(
+            ok=True,
+            detail=f"灯带已设为 {actual}（亮度 {level:.2f}）",
+            data={"color": actual, "brightness": level},
+        )
+
+
+class MockCaptureImageSkill(Skill):
+    name: ClassVar[str] = "capture_image"
+    description: ClassVar[str] = "抓拍当前视野图像并归档，标签用于后续检索"
+    params_model: ClassVar[type[SkillParams]] = CaptureImageParams
+    risk: ClassVar[RiskLevel] = "low"
+
+    def __init__(self, world: MockWorld) -> None:
+        self.world = world
+
+    def run(self, label: str = "snapshot") -> SkillResult:  # type: ignore[override]
+        payload = self.world.capture(label)
+        if not payload["persisted"]:
+            return SkillResult(
+                ok=True,
+                detail=f"已抓拍（mock 后端不落盘，标签 {label}）",
+                data=payload,
+            )
+        return SkillResult(
+            ok=True,
+            detail=f"已抓拍并保存: {payload['path']}",
+            data=payload,
+        )
+
+
+class MockResetOdomSkill(Skill):
+    name: ClassVar[str] = "reset_odom"
+    description: ClassVar[str] = "把当前位置设为里程计原点（物理位置不变）"
+    params_model: ClassVar[type[SkillParams]] = ResetOdomParams
+    # medium：重置后所有相对坐标的语义都变了，上层若还在用旧基准会算错位置。
+    risk: ClassVar[RiskLevel] = "medium"
+
+    def __init__(self, world: MockWorld) -> None:
+        self.world = world
+
+    def run(self) -> SkillResult:  # type: ignore[override]
+        origin = self.world.reset_odom()
+        return SkillResult(
+            ok=True,
+            detail=f"里程计已归零，原点对应世界坐标 ({origin[0]:.2f}, {origin[1]:.2f})",
+            data={"origin_x": origin[0], "origin_y": origin[1]},
+        )
+
+
+def build_mock_registry(
+    arena: ArenaSettings | None = None,
+    *,
+    image_dir: str | None = None,
+) -> tuple[SkillRegistry, MockWorld]:
     """装配 mock 执行器。返回 (registry, world)，world 便于测试断言状态。"""
-    world = MockWorld(arena)
+    world = MockWorld(arena, image_dir=image_dir)
     registry = SkillRegistry()
     registry.register_all(
         [
@@ -474,6 +747,12 @@ def build_mock_registry(arena: ArenaSettings | None = None) -> tuple[SkillRegist
             MockWaitSkill(world),
             MockSetSpeedSkill(world),
             MockStopSkill(world),
+            MockDockSkill(world),
+            MockUndockSkill(world),
+            MockGetBatterySkill(world),
+            MockSetLedSkill(world),
+            MockCaptureImageSkill(world),
+            MockResetOdomSkill(world),
         ]
     )
     return registry, world

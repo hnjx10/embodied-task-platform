@@ -2,7 +2,7 @@
 <?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
 <package format="3">
   <name>robot_agent_ros2</name>
-  <version>1.0.0</version>
+  <version>1.3.0</version>
   <description>
     ROS2 侧的场景与桥接：启动 Gazebo 空世界 + TurtleBot3 + 三个彩色方块。
     任务编排本身在 Python 包 robot_agent 中（独立进程，通过 ROS2 话题通信），
@@ -18,6 +18,19 @@
   <exec_depend>launch_ros</exec_depend>
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>turtlebot3_gazebo</exec_depend>
+  <!-- 新增技能用到的标准消息/服务：电量、相机、灯带、里程计归零 -->
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <exec_depend>std_srvs</exec_depend>
+
+  <!--
+    可选依赖：Nav2 的 NavigateToPose Action。
+
+    只在 ROBOT_AGENT_EXECUTOR__USE_NAV_ACTION=true 时需要，因此不写成
+    exec_depend——写了会让 `rosdep install` 在所有环境下都去拉整套 Nav2，
+    而 TurtleBot3 的 Gazebo 示例世界根本不需要它。未安装时 goto_point 会
+    自动回退到 /cmd_vel + odom 闭环（见 skills/ros2.py 的 RosGotoSkill）。
+  -->
 
   <export>
     <build_type>ament_python</build_type>

@@ -4,7 +4,24 @@
               │            ▲
               │            └── 逐步执行，失败即停
               ├──► report（安全拒绝）
-              └──► END（需要人工审批，状态置 awaiting_approval）
+              └──► END（需要人工审批）
+
+**审批挂起有两种实现，由 ``approval_mode`` 选择**
+
+``persist`` 模式（默认）：闸门判定需要审批后，状态置 ``awaiting_approval`` 并
+结束本次图执行。审批通过时**重建状态重新入图**，从 screen 再跑一遍。
+
+``interrupt`` 模式：在 screen 节点内调用 LangGraph 的 ``interrupt()``，图原地
+挂起，调用方拿到中断载荷；恢复时用 ``Command(resume=...)`` 从断点继续。
+
+为什么默认是前者：``interrupt()`` 依赖 checkpointer，而本项目的 MemorySaver
+活在进程内存里。审批是人的动作，可能等几小时——进程一旦重启，checkpoint 就
+没了，任务卡在「已挂起但无法恢复」。持久化重建把状态放在 SQLite 里，重启后
+照样能批准续跑。interrupt 模式更适合单进程长驻、审批秒回的场景（例如产线上
+工位终端），它的优点是挂起/恢复完全交给框架，不必自己维护状态机。
+
+两种模式的**安全语义一致**：批准之后都要重跑一次策略链，人工批准不等于绕过
+闸门。
 
 为什么保留 LangGraph 而不是写一个 for 循环？
 
@@ -18,7 +35,7 @@ from __future__ import annotations
 
 import operator
 from dataclasses import dataclass
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, Literal, TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
@@ -30,11 +47,24 @@ from robot_agent.errors import RobotAgentError
 from robot_agent.logging import get_logger
 from robot_agent.orchestration.executor import StepExecutor
 from robot_agent.planner.pipeline import Planner
+from robot_agent.planner.router import classify
 from robot_agent.reporting import render_report
 from robot_agent.safety.gate import SafetyGate
 from robot_agent.skills.base import SkillRegistry
 
+try:  # pragma: no cover - 取决于 langgraph 版本
+    from langgraph.types import Command, interrupt
+
+    NATIVE_INTERRUPT = True
+except ImportError:  # pragma: no cover
+    Command = None  # type: ignore[assignment,misc]
+    interrupt = None  # type: ignore[assignment]
+    NATIVE_INTERRUPT = False
+
 logger = get_logger(__name__)
+
+#: 审批挂起方式。见模块 docstring 里的取舍说明。
+ApprovalMode = Literal["persist", "interrupt"]
 
 
 class GraphState(TypedDict, total=False):
@@ -42,6 +72,10 @@ class GraphState(TypedDict, total=False):
 
     task_id: str
     instruction: str
+
+    #: 意图识别的结果（move / manipulate / query / system / unknown）
+    intent: str
+    intent_keyword: str
 
     plan: list[dict[str, Any]]
     plan_source: str
@@ -94,8 +128,27 @@ def initial_state(task_id: str, instruction: str) -> GraphState:
     }
 
 
-def _make_nodes(c: AgentComponents) -> dict[str, Any]:
+def _make_nodes(c: AgentComponents, *, approval_mode: ApprovalMode = "persist") -> dict[str, Any]:
     audit = c.audit
+    native = approval_mode == "interrupt" and NATIVE_INTERRUPT
+
+    # ---------------------------------------------------------------- router
+    def router_node(state: GraphState) -> dict[str, Any]:
+        """意图识别。只记录、不拦截——规则漏词时仍交给模型判断。
+
+        拦在这里会让「挪一下」「怼过去」这类词表外的合法指令直接失败，
+        而它们本来是可以被模型正确解析的。
+        """
+        task_id = state["task_id"]
+        match = classify(state["instruction"])
+        audit.record("intent_routed", match.to_dict(), task_id=task_id)
+        logger.info(
+            "intent_routed",
+            task_id=task_id,
+            intent=match.intent,
+            keyword=match.keyword,
+        )
+        return {"intent": match.intent, "intent_keyword": match.keyword}
 
     # ------------------------------------------------------------------ plan
     def plan_node(state: GraphState) -> dict[str, Any]:
@@ -103,8 +156,15 @@ def _make_nodes(c: AgentComponents) -> dict[str, Any]:
         try:
             plan: Plan = c.planner.plan(state["instruction"])
         except RobotAgentError as exc:
-            audit.record("plan_failed", exc.to_dict(), task_id=task_id)
-            return {"status": "failed", "error": exc.to_dict(), "outcomes": []}
+            # 把意图一起带进错误里：同样是「规划失败」，intent=unknown 说明这句
+            # 话压根不像指令，intent=move 则说明指令像样但句式没覆盖到——
+            # 两种情况的修复方向完全不同，事后看日志必须能区分。
+            payload = exc.to_dict()
+            details = dict(payload.get("details") or {})
+            details.setdefault("intent", state.get("intent", "unknown"))
+            payload["details"] = details
+            audit.record("plan_failed", payload, task_id=task_id)
+            return {"status": "failed", "error": payload, "outcomes": []}
         except Exception as exc:
             logger.exception("plan_unexpected_error", task_id=task_id)
             err = {"code": "internal_error", "message": str(exc)}
@@ -168,8 +228,59 @@ def _make_nodes(c: AgentComponents) -> dict[str, Any]:
                 "awaiting_approval",
                 task_id=task_id,
                 reasons=screening.approval_reasons,
+                mode="interrupt" if native else "persist",
             )
-            return {**base, "status": "awaiting_approval"}
+            if not native:
+                return {**base, "status": "awaiting_approval"}
+
+            # 原生挂起：图在这里停下，控制权交回调用方。
+            # 恢复时**整个 screen 节点会从头重跑**（LangGraph 的重放语义），
+            # 所以这里不能有副作用——审计已经写过了，不能再写一遍。
+            decision = interrupt(
+                {
+                    "type": "approval_required",
+                    "task_id": task_id,
+                    "instruction": state["instruction"],
+                    "reasons": screening.approval_reasons,
+                    "plan": [s.model_dump() for s in screening.steps],
+                }
+            )
+            if not _decision_approved(decision):
+                audit.record(
+                    "approval_rejected",
+                    {"mode": "interrupt", "decision": decision},
+                    task_id=task_id,
+                )
+                return {
+                    **base,
+                    "status": "blocked",
+                    "block_reason": "人工驳回（LangGraph interrupt 恢复）",
+                    "outcomes": [],
+                }
+
+            # 批准后重新校验：人工批准不等于绕过策略链。与 persist 模式的
+            # 续跑图保持同一语义，否则两种模式的安全强度会悄悄不同。
+            recheck = c.gate.screen(plan, instruction=state["instruction"], task_id=task_id)
+            audit.record(
+                "approval_granted",
+                {"mode": "interrupt", "recheck": recheck.to_dict()},
+                task_id=task_id,
+            )
+            if not recheck.ok:
+                return {
+                    **base,
+                    "status": "blocked",
+                    "block_reason": f"批准后复检未通过: {recheck.first_reason()}",
+                    "outcomes": [],
+                }
+            return {
+                "plan": [s.model_dump() for s in recheck.steps],
+                "corrections": recheck.corrections,
+                "requires_approval": False,
+                "approval_reasons": recheck.approval_reasons,
+                "approved": True,
+                "status": "ready",
+            }
         return {**base, "status": "ready"}
 
     # --------------------------------------------------------------- execute
@@ -244,6 +355,7 @@ def _make_nodes(c: AgentComponents) -> dict[str, Any]:
         return {"report": report}
 
     return {
+        "router": router_node,
         "plan": plan_node,
         "screen": screen_node,
         "execute": execute_node,
@@ -252,14 +364,20 @@ def _make_nodes(c: AgentComponents) -> dict[str, Any]:
     }
 
 
-def build_graph(c: AgentComponents) -> Any:
+def build_graph(
+    c: AgentComponents,
+    *,
+    approval_mode: ApprovalMode = "persist",
+    checkpointer: Any = None,
+) -> Any:
     """完整图：用于新任务。"""
-    nodes = _make_nodes(c)
+    nodes = _make_nodes(c, approval_mode=approval_mode)
     g: StateGraph = StateGraph(GraphState)
     for name, fn in nodes.items():
         g.add_node(name, fn)
 
-    g.add_edge(START, "plan")
+    g.add_edge(START, "router")
+    g.add_edge("router", "plan")
     g.add_conditional_edges(
         "plan",
         _route_after_plan,
@@ -273,18 +391,26 @@ def build_graph(c: AgentComponents) -> Any:
     g.add_edge("execute", "verify")
     g.add_edge("verify", "report")
     g.add_edge("report", END)
-    return g.compile()
+    return g.compile(checkpointer=_ensure_checkpointer(approval_mode, checkpointer))
 
 
-def build_resume_graph(c: AgentComponents) -> Any:
+def build_resume_graph(
+    c: AgentComponents,
+    *,
+    approval_mode: ApprovalMode = "persist",
+    checkpointer: Any = None,
+) -> Any:
     """审批通过后的续跑图：跳过 plan，**重跑 screen**再执行。
 
     重跑 screen 是为了覆盖「审批期间计划被人为修改」的情况——人工修改同样受策略约束。
+    ``interrupt`` 模式下这张图用不到（恢复走 ``Command(resume=...)``），
+    保留它是为了让 persist 路径与测试共用同一套装配。
     """
-    nodes = _make_nodes(c)
+    nodes = _make_nodes(c, approval_mode=approval_mode)
     g: StateGraph = StateGraph(GraphState)
     for name, fn in nodes.items():
-        if name == "plan":
+        if name in {"router", "plan"}:
+            # 续跑时意图已经路由过、计划也已确定，重跑这两步只会覆盖人工意图
             continue
         g.add_node(name, fn)
 
@@ -297,7 +423,29 @@ def build_resume_graph(c: AgentComponents) -> Any:
     g.add_edge("execute", "verify")
     g.add_edge("verify", "report")
     g.add_edge("report", END)
-    return g.compile()
+    return g.compile(checkpointer=_ensure_checkpointer(approval_mode, checkpointer))
+
+
+def _ensure_checkpointer(approval_mode: ApprovalMode, checkpointer: Any) -> Any:
+    """interrupt 模式必须有 checkpointer：没有它就无处保存中断点，恢复会报错。
+
+    这里兜底成 MemorySaver，而不是让调用方自己去配——忘了配的人只会在
+    第一次需要审批时才发现问题，那时任务已经卡住了。
+    """
+    if checkpointer is not None:
+        return checkpointer
+    if approval_mode == "interrupt" and NATIVE_INTERRUPT:
+        from langgraph.checkpoint.memory import MemorySaver
+
+        return MemorySaver()
+    return None
+
+
+def _decision_approved(decision: Any) -> bool:
+    """解析人工决定。默认拒绝——只有显式 approved=True 才算批准。"""
+    if isinstance(decision, dict):
+        return decision.get("approved") is True
+    return decision is True
 
 
 # --------------------------------------------------------------------- 路由

@@ -60,6 +60,21 @@ class ArenaSettings(BaseModel):
             "blue": (-0.7, 0.6),
         }
     )
+    dock_pose: tuple[float, float] = Field(
+        default=(1.3, 1.3),
+        description=(
+            "充电桩中心坐标。回充技能据此计算停靠点；safety.geofences 里的 "
+            "charging_dock 必须与它一致，否则会出现「桩在禁区里、回充即越界」"
+        ),
+    )
+    dock_clearance: float = Field(
+        default=0.55,
+        gt=0.0,
+        description=(
+            "回充时机器人停在距桩心该距离处。必须大于禁区半径，"
+            "否则回充目标本身落在禁区里，会被 GeofencePolicy 拦下"
+        ),
+    )
 
     @property
     def bounds(self) -> tuple[float, float]:
@@ -114,6 +129,13 @@ class LLMSettings(BaseModel):
     max_attempts: int = Field(default=3, ge=1, le=6)
     max_output_tokens: int = Field(default=1024, ge=64)
     fallback_to_rules: bool = Field(default=True, description="LLM 失败时是否降级规则解析")
+    tool_calling: bool = Field(
+        default=True,
+        description=(
+            "用 Function Calling 让模型直接返回 tool_calls；关闭后退回「提示词要求输出 JSON」"
+            "的纯文本模式。网关不支持 tools 参数时会自动降级，无需手动关。"
+        ),
+    )
 
     @field_validator("api_key", mode="before")
     @classmethod
@@ -143,6 +165,23 @@ class ExecutorSettings(BaseModel):
     max_attempts: int = Field(default=2, ge=1, le=5, description="瞬时故障重试次数")
     retry_backoff_s: float = Field(default=0.3, ge=0.0)
     ros_domain_id: int | None = Field(default=None, ge=0, le=232)
+    image_dir: str | None = Field(
+        default=None,
+        description=(
+            "capture_image 的落盘目录。为空时只返回图像元数据不落盘——"
+            "在容器里静默写满磁盘，比不写更糟"
+        ),
+    )
+    use_nav_action: bool = Field(
+        default=False,
+        description=(
+            "点位导航是否走 nav2_msgs/action/NavigateToPose。关闭时回退到 /cmd_vel + odom "
+            "闭环。默认关闭是因为 TurtleBot3 的 Gazebo 示例世界不带 Nav2，"
+            "开着会在每次导航前白等 3 秒服务发现"
+        ),
+    )
+    nav_action_name: str = Field(default="/navigate_to_pose", description="导航 Action 名称")
+    nav_frame_id: str = Field(default="map", description="导航目标点所在坐标系")
 
 
 class AuditSettings(BaseModel):
@@ -230,6 +269,35 @@ class YamlConfigSource(PydanticBaseSettingsSource):
         return raw
 
 
+class LockSettings(BaseModel):
+    """设备级执行锁：防止多实例同时驱动同一台机器人。"""
+
+    backend: Literal["none", "redis"] = Field(
+        default="none",
+        description=(
+            "none：单实例部署，进程内信号量已足够，不额外加锁。"
+            "redis：多副本 / CLI 与服务并存时必须开启，否则两个进程会同时发 /cmd_vel"
+        ),
+    )
+    redis_url: SecretStr | None = Field(default=None, description="redis://host:6379/0")
+    key_prefix: str = Field(default="robot_agent:lock:")
+    ttl_s: float = Field(
+        default=30.0,
+        gt=0.0,
+        description=(
+            "锁的自动过期时间。应大于单步执行超时（executor.step_timeout_s 或更细的"
+            "步骤超时），否则长任务执行中锁会自己过期，互斥就失效了"
+        ),
+    )
+
+    @field_validator("redis_url", mode="before")
+    @classmethod
+    def _blank_to_none(cls, value: Any) -> Any:
+        if isinstance(value, str) and not value.strip():
+            return None
+        return value
+
+
 class Settings(BaseSettings):
     """进程级配置单例（由 :func:`load_settings` 构造）。"""
 
@@ -247,6 +315,16 @@ class Settings(BaseSettings):
     service_name: str = "robot-agent"
     log_level: str = "INFO"
     log_json: bool = True
+    #: 设备标识。分布式锁按它分区——同一个 robot_id 的执行必须互斥
+    robot_id: str = Field(default="default", description="机器人/设备唯一标识")
+    approval_mode: Literal["persist", "interrupt"] = Field(
+        default="persist",
+        description=(
+            "人工审批的挂起方式。persist：状态落库，批准后重建状态续跑，进程重启不丢；"
+            "interrupt：LangGraph 原生 interrupt()，图原地挂起、Command 恢复，"
+            "但依赖进程内 checkpointer，重启后无法恢复。审批可能等几小时，故默认 persist"
+        ),
+    )
 
     arena: ArenaSettings = Field(default_factory=ArenaSettings)
     safety: SafetySettings = Field(default_factory=SafetySettings)
@@ -255,6 +333,7 @@ class Settings(BaseSettings):
     audit: AuditSettings = Field(default_factory=AuditSettings)
     storage: StorageSettings = Field(default_factory=StorageSettings)
     api: APISettings = Field(default_factory=APISettings)
+    lock: LockSettings = Field(default_factory=LockSettings)
 
     # 由 load_settings 注入，供 YAML 源读取
     _config_path: Path | None = None

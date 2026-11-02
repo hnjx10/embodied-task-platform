@@ -192,6 +192,18 @@ class TooManySubscribersError(RobotAgentError):
     retryable = True
 
 
+class DeviceBusyError(RobotAgentError):
+    """设备被另一个执行者占用（另一副本 / CLI / 另一个任务正在驱动它）。
+
+    可重试：占用通常是暂时的，退避后重新提交即可。不可重试会让调度器直接
+    把任务判死，而实际上它只是排在别人后面。
+    """
+
+    code = "device_busy"
+    http_status = 409
+    retryable = True
+
+
 # -------------------------------------------------------------------- 评测
 
 

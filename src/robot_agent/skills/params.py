@@ -105,3 +105,48 @@ class StopParams(SkillParams):
 
 class ReportStatusParams(SkillParams):
     """状态上报无参数。"""
+
+
+# ---------------------------------------------------------------- 能源 / 外设
+
+
+class DockParams(SkillParams):
+    """回充无参数。
+
+    停到哪儿由场地配置决定（``arena.dock_pose``），不该让模型指定——模型没有
+    充电桩坐标的可靠来源，让它填等于给它一个编错坐标的机会。
+    """
+
+
+class UndockParams(SkillParams):
+    distance: float = Field(
+        default=0.3, ge=0.05, le=2.0, description="离开充电桩的距离（米），朝场地中心方向"
+    )
+
+
+class GetBatteryParams(SkillParams):
+    """电量查询无参数。"""
+
+
+class SetLedParams(SkillParams):
+    color: Literal["red", "green", "blue", "off"] = Field(description="灯带颜色，off 为关闭")
+    brightness: float = Field(default=1.0, ge=0.0, le=1.0, description="亮度，0~1")
+
+
+class CaptureImageParams(SkillParams):
+    """抓拍一张图并归档。
+
+    ``label`` 会被用作文件名的一部分，因此必须限制字符集：不限制就等于把
+    ``../../etc/passwd`` 这种路径交给模型去填。这里用白名单而不是黑名单——
+    黑名单永远漏一个没被想到的变体。
+    """
+
+    label: str = Field(
+        default="snapshot",
+        pattern=r"^[A-Za-z0-9_\u4e00-\u9fa5-]{1,64}$",
+        description="图像标签，仅允许字母、数字、下划线、连字符与中文，用于归档检索",
+    )
+
+
+class ResetOdomParams(SkillParams):
+    """重置里程计无参数：把当前位姿当作原点，重置本身不需要目标值。"""

@@ -2,6 +2,85 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [1.3.0] - 2026-11-02
+
+主题：**把「模型怎么调技能、多实例怎么抢设备、审批怎么挂起」这三处从约定变成机制。**
+
+这一版没有加新功能，改的全是「原来只是这么写着，现在真的这么做」的地方。
+
+### Changed（规划：JSON 文本 → Function Calling）
+
+- **规划改走 Function Calling**：`SkillRegistry.tool_schemas()` 把每个技能的
+  pydantic 参数模型导出成 OpenAI 兼容的 `tools` 数组（`$ref` 递归展开成内联，
+  部分网关会忽略带 `$ref` 的参数，模型于是「看不到」嵌套结构）。
+  模型直接返回 `tool_calls`，不再让它在回复正文里手写 JSON。
+
+  这不是代码风格问题，是**错误的形状**变了：手写 JSON 会多括号、少引号、
+  混解释文字，容错越写越多，最终把幻觉「修」成一个看起来正常的危险动作；
+  `tool_calls` 由 provider 按 schema 校验，能错的只剩语义错，那由安全层兜。
+
+- **网关能力降级留痕**：不支持 `tools` 时自动退回纯文本模式，且降级后的 prompt
+  **重新带上技能清单**（tools 版 prompt 不含清单，直接拿去解析纯文本会让模型
+  凭空编技能名）。降级次数进 `llm_tool_mode_total{mode="unsupported"}`。
+
+- **解析失败不再计入熔断**：`PlanValidationError` 表示「模型答了但不合规」，
+  不是上游故障。原实现会把它算进熔断计数，几条离谱指令就能把 LLM 通道打成
+  熔断，之后全部降级到规则规划。
+
+### Added
+
+- **技能库 15 → 21**：新增 `dock`、`undock`、`get_battery`、`set_led`、
+  `capture_image`、`reset_odom`，mock 与 ROS2 双后端同名同参。
+
+  几个刻意的细节：`dock` 的目标是「距桩心 `dock_clearance` 米」而不是桩心
+  本身——充电桩在禁区里，开向桩心等于让机器人往禁区钻，会被自己的安全策略
+  拦下；`capture_image` 的 `label` 走白名单正则，它会进文件名，不限制字符集
+  等于把 `../` 交给模型填；`reset_odom` 只改里程计原点、不动物理位置
+  （编码器清零，车没动）。
+
+- **ROS2 Action 导航**（`skills/ros2_action.py`）：基于 `nav2_msgs/action/
+  NavigateToPose` 封装点位导航，用 goal/feedback/result 三段替代「发速度再
+  自己订阅 odom 猜到没到」。急停可取消 Action，不再只是发零速把车停住、
+  任务还挂着。
+
+  默认关闭（TurtleBot3 的 Gazebo 示例世界不带 Nav2），开启后 Action 不可用时
+  回退 `/cmd_vel` 闭环；但 Action 明确 `aborted` / `rejected` 时**不**回退——
+  规划器说这个目标到不了，再用比例控制硬冲一遍是把「规划失败」掩盖成
+  「好像到了」。
+
+- **设备级分布式锁**（`orchestration/execution_lock.py`）：`SET key token NX PX`
+  一条命令完成「不存在才写 + 同时设过期」，释放走 Lua 比对 token 再删。
+
+  两个必须做对的地方：`SETNX` + `EXPIRE` 拆成两条，中间崩了就没有 TTL，
+  锁永远不释放；释放不比对 token，A 的锁过期后 B 拿到，A 执行完删掉的是 B 的
+  锁——互斥静默失效，没有任何报错。
+
+  默认 `lock.backend=none`：单实例的进程内信号量已经够了，加锁是纯开销。
+  多副本 / CLI 与服务并存时必须开，否则两个进程会同时发 `/cmd_vel`。
+
+- **LangGraph 原生 interrupt 审批**：`approval_mode=interrupt` 时在 screen 节点
+  调用 `interrupt()`，图原地挂起，`Command(resume=...)` 从断点恢复。
+
+  默认仍是 `persist`：`interrupt()` 依赖 checkpointer，MemorySaver 活在进程
+  内存里，而审批是人的动作、可能等几小时——进程一重启 checkpoint 就没了，
+  任务卡在「已挂起但无法恢复」。两种模式对外契约一致（都是
+  `awaiting_approval`），批准后都重跑一次策略链。
+
+  驳回也会唤醒挂起的图，否则 checkpoint 里会留着一条永不结束的线程。
+
+- **意图识别路由**（`planner/router.py`）：`START → router → plan`，把指令
+  分成 move / manipulate / query / system，结果进审计与日志。
+
+  刻意的取舍：`unknown` **不拦截**，仍然交给规划器。关键词表必然漏词
+  （「挪一下」「怼过去」都是合法指令），拿覆盖率有限的规则去拦，会把本来
+  能完成的任务变成失败——比多花一次模型调用糟糕得多。
+
+### Fixed
+
+- Windows 下 `capture_image` 写 PPM 时文本模式把 `\n` 转成 `\r\n`，文件头
+  字节数与 Linux 不一致。改用 `newline=""`。
+- `test_registry_len` 的下限从 15 提到 21，作为「能力被砍」的护栏。
+
 ## [1.2.0] - 2026-11-02
 
 主题：**把「拦得住」变成可执行、可复现、能被 CI 门禁的证据。**

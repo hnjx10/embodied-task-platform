@@ -103,6 +103,11 @@ PLANNING_DURATION = Histogram(
 # ---------------------------------------------------------------- LLM
 LLM_REQUESTS_TOTAL = Counter(f"{_PREFIX}_llm_requests_total", "LLM 调用次数", ["model", "outcome"])
 LLM_TOKENS_TOTAL = Counter(f"{_PREFIX}_llm_tokens_total", "LLM token 用量", ["model", "direction"])
+LLM_TOOL_CALLS_TOTAL = Counter(
+    f"{_PREFIX}_llm_tool_mode_total",
+    "规划走的是哪条调用路径",
+    ["model", "mode"],
+)
 
 # ---------------------------------------------------------------- 审计
 AUDIT_ENTRIES_TOTAL = Counter(f"{_PREFIX}_audit_entries_total", "审计条目写入数", ["event"])
@@ -135,6 +140,7 @@ def reset_for_tests() -> None:
         PLANNING_DURATION,
         LLM_REQUESTS_TOTAL,
         LLM_TOKENS_TOTAL,
+        LLM_TOOL_CALLS_TOTAL,
         AUDIT_ENTRIES_TOTAL,
         AUDIT_WRITE_ERRORS_TOTAL,
         EVENT_SUBSCRIBER_REJECTED_TOTAL,

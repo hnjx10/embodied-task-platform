@@ -31,6 +31,26 @@ def _response(content: str, prompt_tokens: int = 100, completion_tokens: int = 3
     )
 
 
+def _tool_call(name: str, args: Any = None, call_id: str = "call_1") -> Any:
+    """构造一个 OpenAI 形态的 tool_call。args 传 dict 会序列化成字符串。"""
+    raw = args if isinstance(args, str) else json.dumps(args if args is not None else {})
+    return SimpleNamespace(
+        id=call_id,
+        function=SimpleNamespace(name=name, arguments=raw),
+    )
+
+
+def _tool_response(*calls: Any, content: str | None = None) -> Any:
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=content, tool_calls=list(calls) or None)
+            )
+        ],
+        usage=SimpleNamespace(prompt_tokens=120, completion_tokens=45),
+    )
+
+
 class FakeCompletions:
     """按顺序返回预置响应；元素是异常就抛出。"""
 
@@ -77,7 +97,7 @@ def test_parses_valid_plan() -> None:
 
 
 def test_prompt_includes_skill_signatures() -> None:
-    planner, fake = make_planner([_response(GOOD)])
+    planner, fake = make_planner([_response(GOOD)], tool_calling=False)
     planner.plan("把红色方块推到左边")
     system_prompt = fake.last_kwargs["messages"][0]["content"]
     assert "push_cube" in system_prompt
@@ -94,6 +114,109 @@ def test_accepts_json_with_prose() -> None:
     noisy = "好的，计划如下：\n" + GOOD + "\n希望有帮助。"
     planner, _ = make_planner([_response(noisy)])
     assert len(planner.plan("把红色方块推到左边").steps) == 1
+
+
+# ------------------------------------------------------------ Function Calling
+
+
+def test_parses_tool_calls_in_order() -> None:
+    """多个 tool_call 的顺序就是执行顺序——这是 Function Calling 相对 JSON 的硬优势。"""
+    planner, fake = make_planner(
+        [
+            _tool_response(
+                _tool_call("goto_point", {"x": 0.0, "y": 0.5}, "c1"),
+                _tool_call("push_cube", {"color": "red", "x": -1.2, "y": 0.0}, "c2"),
+            )
+        ]
+    )
+    plan = planner.plan("把红色方块推到左边")
+    assert [s.skill for s in plan.steps] == ["goto_point", "push_cube"]
+    assert plan.steps[1].args["color"] == "red"
+    assert "tools" in fake.last_kwargs
+
+
+def test_tools_array_carries_full_schema() -> None:
+    planner, fake = make_planner([_tool_response(_tool_call("get_pose", {"target": "robot"}))])
+    planner.plan("机器人在哪")
+    tools = fake.last_kwargs["tools"]
+    names = [t["function"]["name"] for t in tools]
+    assert "goto_point" in names and "patrol" in names
+    assert all(t["type"] == "function" for t in tools)
+
+    push = next(t for t in tools if t["function"]["name"] == "push_cube")
+    params = push["function"]["parameters"]
+    assert params["type"] == "object"
+    assert params["properties"]["color"]["enum"] == ["red", "green", "blue"]
+    assert set(params["required"]) == {"color", "x", "y"}
+    assert "$ref" not in json.dumps(params)
+
+
+def test_tool_mode_prompt_does_not_repeat_skill_list() -> None:
+    """技能清单只该有一份事实来源。prompt 与 tools 各写一份必然漂移。"""
+    planner, fake = make_planner([_tool_response(_tool_call("get_pose", {"target": "robot"}))])
+    planner.plan("机器人在哪")
+    system_prompt = fake.last_kwargs["messages"][0]["content"]
+    assert "push_cube(" not in system_prompt
+    assert "red|green|blue" not in system_prompt
+
+
+def test_rejects_unknown_tool_name() -> None:
+    planner, _ = make_planner([_tool_response(_tool_call("launch_missile", {}))])
+    with pytest.raises(PlanValidationError) as exc:
+        planner.plan("发射导弹")
+    assert "未注册技能" in str(exc.value)
+
+
+def test_rejects_tool_args_that_are_not_json() -> None:
+    planner, _ = make_planner([_tool_response(_tool_call("goto_point", "{not json"))])
+    with pytest.raises(PlanValidationError) as exc:
+        planner.plan("去中间")
+    assert "参数" in str(exc.value)
+
+
+def test_empty_argument_string_means_no_params() -> None:
+    """无参数技能在多数模型上返回空字符串。这里若报错，急停就按不下去。"""
+    planner, _ = make_planner([_tool_response(_tool_call("stop", ""))])
+    plan = planner.plan("停下")
+    assert plan.steps[0].skill == "stop"
+    assert plan.steps[0].args == {}
+
+
+def test_rejects_plan_longer_than_limit() -> None:
+    calls = [_tool_call("get_pose", {"target": "robot"}, f"c{i}") for i in range(12)]
+    planner, _ = make_planner([_tool_response(*calls)])
+    with pytest.raises(PlanValidationError) as exc:
+        planner.plan("反复查询")
+    assert "上限" in str(exc.value)
+
+
+def test_falls_back_to_json_when_gateway_lacks_tools() -> None:
+    """网关不认 tools 参数时必须退回纯文本，而不是整条链路失败。
+
+    且降级后的 prompt 必须重新带上技能清单——用 tools 版 prompt 去解析纯文本，
+    模型根本不知道有哪些技能。
+    """
+    planner, fake = make_planner(
+        [RuntimeError("unsupported parameter: tools"), _response(GOOD)],
+    )
+    plan = planner.plan("把红色方块推到左边")
+    assert plan.steps[0].skill == "push_cube"
+    assert fake.calls == 2
+    assert "push_cube(" in fake.last_kwargs["messages"][0]["content"]
+
+
+def test_tool_calls_recorded_for_replay() -> None:
+    """raw 里要留下模型到底调了什么，否则事后无法解释「它为什么这么干」。"""
+    planner, _ = make_planner([_tool_response(_tool_call("goto_point", {"x": 0.5, "y": 0.5}))])
+    plan = planner.plan("去右上角")
+    assert "tool_calls" in plan.raw
+    assert "goto_point" in plan.raw
+
+
+def test_content_used_when_tools_accepted_but_ignored() -> None:
+    """部分模型只在 tool_choice=required 时才调函数，仍用 content 回答。"""
+    planner, _ = make_planner([_tool_response(content=GOOD)])
+    assert planner.plan("把红色方块推到左边").steps[0].skill == "push_cube"
 
 
 # ------------------------------------------------------------------ 输出校验
