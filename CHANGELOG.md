@@ -2,6 +2,23 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [Unreleased]
+
+### Changed
+
+- **项目更名为 `robot-agent`**（原 `gazebo-langgraph-demo`）。名称里不再带 `demo`：
+  交付形态是服务而非示例脚本，`pyproject` 名称、CLI、镜像名、systemd 单元本就叫
+  `robot-agent`，这次把仓库名与文档链接统一过来，`gazebo` 只作为可选执行器后端出现在
+  `ros2_ws/` 里。旧仓库地址由 GitHub 自动重定向。
+- **凭据不再硬编码、不落仓库**：发布工具改为按「环境变量 `GH_TOKEN` → 权限 600 的凭据文件」
+  顺序取 token，任何输出前统一脱敏；同步前先扫描工作区，命中 token 字面量直接拒绝上传。
+
+### Added
+
+- **仓库级密钥扫描**（`tests/unit/test_no_secrets.py`）：对全部文本文件匹配 GitHub PAT /
+  云厂商长期密钥 / 模型服务密钥 / 私钥块，随 `pytest` 在 CI 每次提交上执行。
+  凭据一旦进入 git 历史就只能改写历史 + 吊销重发，这道门禁比 code review 更可靠。
+
 ## [1.0.0] - 2026-11-02
 
 从演示脚本重构为可交付服务。**这是一次不兼容重构**：模块路径由 `src/*.py` 平铺改为
@@ -44,7 +61,7 @@
 - **部署清单**：systemd unit（加固项齐全）、K8s Deployment/Service/PVC/ServiceMonitor。
 - **文档**：API 参考、架构说明（含失败隔离矩阵）、运维 Runbook（故障决策树 + 告警阈值）、
   两份 ADR（fail-closed、状态 CAS）、SECURITY 信任边界、CONTRIBUTING 扩展指南。
-- **测试**：208 个用例，覆盖策略边界、fail-closed、CAS 并发、哈希链篡改、CLI 退出码、
+- **测试**：215 个用例，覆盖策略边界、fail-closed、CAS 并发、哈希链篡改、CLI 退出码、
   LLM 重试/熔断/降级、HTTP 接口与 SSE、优雅关闭。
 - **质量门禁**：ruff（含 bandit/async/bugbear 规则）+ ruff format + mypy + GitHub Actions
   （3.10/3.11/3.12 矩阵、ROS 降级导入检查、镜像构建与容器冒烟）。

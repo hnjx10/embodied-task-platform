@@ -3,7 +3,7 @@
 ## 报告漏洞
 
 请**不要**开公开 issue。发邮件到仓库 owner 的 GitHub 邮箱，或使用 GitHub 的
-[Private vulnerability reporting](https://github.com/hnjx10/gazebo-langgraph-demo/security/advisories/new)。
+[Private vulnerability reporting](https://github.com/hnjx10/robot-agent/security/advisories/new)。
 
 请包含：受影响版本、复现步骤、影响评估。48 小时内回复，修复后会在 CHANGELOG 致谢。
 

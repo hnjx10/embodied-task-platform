@@ -58,8 +58,8 @@ dev = [
 robot-agent = "robot_agent.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/hnjx10/gazebo-langgraph-demo"
-Issues = "https://github.com/hnjx10/gazebo-langgraph-demo/issues"
+Homepage = "https://github.com/hnjx10/robot-agent"
+Issues = "https://github.com/hnjx10/robot-agent/issues"
 
 [tool.setuptools.packages.find]
 where = ["src"]
