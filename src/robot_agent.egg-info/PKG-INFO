@@ -1,0 +1,140 @@
+Metadata-Version: 2.4
+Name: robot-agent
+Version: 1.0.0
+Summary: LLM-driven task orchestration for ROS2 / Gazebo robots, with a policy-based safety gate, hash-chained audit trail and an HTTP control plane.
+Author: Jiang Hua
+License: MIT
+Project-URL: Homepage, https://github.com/hnjx10/gazebo-langgraph-demo
+Project-URL: Issues, https://github.com/hnjx10/gazebo-langgraph-demo/issues
+Keywords: robotics,ros2,langgraph,llm,embodied-ai,orchestration
+Classifier: Programming Language :: Python :: 3
+Classifier: Programming Language :: Python :: 3.10
+Classifier: Programming Language :: Python :: 3.11
+Classifier: Programming Language :: Python :: 3.12
+Classifier: Topic :: Scientific/Engineering :: Artificial Intelligence
+Classifier: License :: OSI Approved :: MIT License
+Classifier: Operating System :: POSIX :: Linux
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+License-File: LICENSE
+Requires-Dist: pydantic<3,>=2.6
+Requires-Dist: pydantic-settings<3,>=2.2
+Requires-Dist: structlog>=24.1
+Requires-Dist: tenacity>=8.2
+Requires-Dist: langgraph>=0.2.50
+Provides-Extra: llm
+Requires-Dist: openai>=1.30; extra == "llm"
+Provides-Extra: api
+Requires-Dist: fastapi>=0.115; extra == "api"
+Requires-Dist: uvicorn[standard]>=0.30; extra == "api"
+Requires-Dist: prometheus-client>=0.20; extra == "api"
+Requires-Dist: aiosqlite>=0.20; extra == "api"
+Requires-Dist: pyyaml>=6.0; extra == "api"
+Provides-Extra: ros
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Requires-Dist: pytest-asyncio>=0.23; extra == "dev"
+Requires-Dist: pytest-cov>=5.0; extra == "dev"
+Requires-Dist: httpx>=0.27; extra == "dev"
+Requires-Dist: ruff>=0.6; extra == "dev"
+Requires-Dist: mypy>=1.10; extra == "dev"
+Requires-Dist: pre-commit>=3.7; extra == "dev"
+Dynamic: license-file
+
+# Gazebo + LangGraph 具身任务编排 Demo
+
+用大模型把自然语言指令拆解为机器人技能序列，经安全校验后驱动 ROS2/Gazebo 仿真环境中的差速机器人完成推箱任务。
+
+> **演示视频**：`docs/demo.gif`（录制后放入）
+
+## 架构
+
+```
+自然语言指令 ("把红色方块推到左边")
+        │
+        ▼
+┌──────────────┐   LLM 规划（Qwen/OpenAI，无 API 时规则兜底）
+│  Planner     │──► 技能序列 [{skill: push_cube, args:{color:red, x:-1.2, y:0}}]
+└──────┬───────┘
+       ▼
+┌──────────────┐   参数边界校验 + 速度上限 + 电子围栏
+│ Safety Gate  │──► 不通过 → 拦截并输出原因（审计日志）
+└──────┬───────┘
+       ▼
+┌──────────────┐   LangGraph StateGraph 编排
+│  Executor    │──► ROS2 Action/Topic：goto_point / push_cube / get_pose
+└──────┬───────┘   （无 ROS 环境时自动降级为 mock 执行器）
+       ▼
+┌──────────────┐   /gazebo/model_states 读取方块位姿
+│  Verifier    │──► 距目标 < 0.25m → 任务成功，生成执行报告
+└──────────────┘
+```
+
+## 快速开始
+
+### 方式一：Mock 模式（无需 ROS，任何机器可跑）
+
+```bash
+pip install -r requirements.txt
+python -m pytest tests/ -v          # 跑通全部测试
+python scripts/demo.py --mock "把红色方块推到左边"
+python scripts/demo.py --mock "以 0.5 m/s 全速冲向红色方块"   # 被安全层拦截
+```
+
+### 方式二：Gazebo 仿真（Ubuntu 22.04 + ROS2 Humble）
+
+```bash
+# 依赖
+sudo apt install ros-humble-turtlebot3-gazebo ros-humble-gazebo-ros-pkgs
+export TURTLEBOT3_MODEL=waffle
+export ROS_DOMAIN_ID=42
+
+# 终端 1：启动 Gazebo（空世界 + TurtleBot3）
+ros2 launch turtlebot3_gazebo empty_world.launch.py
+
+# 终端 2：生成三个彩色方块
+python scripts/spawn_cubes.py
+
+# 终端 3：运行编排器
+export OPENAI_API_KEY=sk-xxx          # 可选，配 Qwen 兼容接口
+export OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+export OPENAI_MODEL=qwen-plus
+python scripts/demo.py --ros "把红色方块推到左边"
+```
+
+## 亮点
+
+- **技能库抽象**：技能统一 `skill 名 + 参数 schema`，注册即用，新增技能零改动主流程
+- **行为安全**：参数边界、速度上限、电子围栏三层校验，越界指令直接拦截并写审计日志
+- **双模式执行器**：同一套 LangGraph 编排，ROS 与 mock 执行器可互换（依赖倒置），CI 无仿真环境也能回归
+- **全链路审计**：每步规划、拦截、执行结果落 JSONL，问题可回放定位
+- **规划双通道**：LLM 结构化输出为主，规则解析兜底，无 API Key 演示不翻车
+
+## 目录结构
+
+```
+├── src/
+│   ├── graph.py          # LangGraph StateGraph：plan → validate → execute → verify
+│   ├── planner.py        # LLM 规划 + 规则兜底
+│   ├── safety.py         # 安全校验（边界/限速/围栏）
+│   ├── audit.py          # JSONL 审计日志
+│   └── skills/
+│       ├── base.py       # Skill 基类与注册表
+│       ├── ros_skills.py # ROS2 执行器（cmd_vel + odom 闭环）
+│       └── mock_skills.py# Mock 执行器
+├── scripts/
+│   ├── demo.py           # CLI 入口
+│   └── spawn_cubes.py    # Gazebo 方块生成
+├── launch/demo.launch.py # 一键启动（Gazebo + 方块）
+└── tests/test_graph.py   # mock 端到端 + 安全拦截回归
+```
+
+## Roadmap
+
+- [ ] MoveIt2 机械臂抓放（替换推箱）
+- [ ] Isaac Sim 执行器（IsaacLab 接口）
+- [ ] LangSmith 观测接入
+
+## License
+
+MIT
