@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from robot_agent import metrics
 from robot_agent.audit import AuditLog, NullAuditLog
 from robot_agent.config import Settings
 from robot_agent.domain.plan import PlanStep
@@ -32,15 +33,54 @@ from robot_agent.storage.sqlite import SqliteTaskRepository, build_repository
 logger = get_logger(__name__)
 
 
-def _pre_dispatch(gate: SafetyGate) -> PreDispatchCheck:
+#: 需要实时位姿才能安全下发的技能。急停 ``stop`` **刻意不在其中**：
+#: 位姿过期时最该能执行的恰恰是停下来，把它也拦掉等于用安全规则制造危险。
+MOTION_SKILLS = frozenset(
+    {
+        "goto_point",
+        "move_relative",
+        "rotate",
+        "look_at",
+        "patrol",
+        "push_cube",
+        "pick_cube",
+        "place_cube",
+        "dock",
+        "undock",
+    }
+)
+
+
+def _pre_dispatch(
+    gate: SafetyGate,
+    *,
+    pose_age: Callable[[], float | None] | None = None,
+    stale_s: float = 2.0,
+) -> PreDispatchCheck:
     """把闸门的单步校验包成执行器要的形状。
 
     计划级校验发生在「计划生成之后、执行之前」，中间还夹着一次人工审批。
     审批人有权改步骤参数，所以真正下发硬件前的这一刻必须再过一遍策略链——
     否则「人工批准」就成了一条绕开安全层的通道。
+
+    在这之上还多查一件事：**位姿是不是还新鲜**。ROS2 侧的 ``/odom`` 回调如果
+    断了（节点挂了、DDS 丢包、话题名改了），``self._odom`` 会安静地停在最后一次
+    收到的值上——后续的「再往前 3 米」就会拿一条几分钟前的位姿去算目标点。
+    这种故障不报错、不告警，只能靠时间戳发现。
     """
 
     def check(step: PlanStep) -> tuple[PlanStep, str | None]:
+        if pose_age is not None and step.skill in MOTION_SKILLS:
+            age = pose_age()
+            if age is None:
+                metrics.SAFETY_BLOCKED_TOTAL.labels(policy="stale_pose").inc()
+                return step, "尚未收到任何位姿数据（/odom 未上报），拒绝下发移动动作"
+            if age > stale_s:
+                metrics.SAFETY_BLOCKED_TOTAL.labels(policy="stale_pose").inc()
+                return step, (
+                    f"位姿已过期 {age:.1f}s（阈值 {stale_s:.1f}s），"
+                    "拒绝下发移动动作；请检查 /odom 话题与机器人驱动"
+                )
         corrected, summary = gate.screen_step(step)
         return corrected, (None if summary.allowed else summary.reason)
 
@@ -115,7 +155,18 @@ async def build_assembly(settings: Settings, *, force_rules: bool = False) -> As
 
     planner = Planner(settings, registry, force_rules=force_rules)
     gate = SafetyGate(settings.safety, settings.arena, registry)
-    executor = StepExecutor(registry, settings.executor, pre_dispatch=_pre_dispatch(gate))
+    # 后端句柄同时管着「怎么动」和「现在在哪」：ROS2 下是 RosBridge（订阅 /odom），
+    # mock 下是 MockWorld。把「位姿新鲜度」从后端抽出来交给安全层，而不是让安全层
+    # 直接依赖 rclpy——安全规则不该为了跑单元测试而引入一个中间件。
+    executor = StepExecutor(
+        registry,
+        settings.executor,
+        pre_dispatch=_pre_dispatch(
+            gate,
+            pose_age=getattr(backend_handle, "pose_age_s", None),
+            stale_s=settings.safety.pose_stale_s,
+        ),
+    )
 
     components = AgentComponents(
         settings=settings,

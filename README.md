@@ -14,7 +14,7 @@
 全过程可审计、可观测、可人工接管。
 
 不是「跑一次 demo 的脚本」，而是按生产标准组织的服务：
-**21 个技能 · 7 条安全策略 · 250 条用例的安全评测集 · 388 个测试 · 分层依赖由 CI 静态校验**。
+**21 个技能 · 8 条安全策略 · 250 条用例的安全评测集 · 407 个测试 · 分层依赖由 CI 静态校验**。
 
 ## 30 秒验证
 
@@ -381,6 +381,7 @@ ROBOT_AGENT_CONFIG=config/production.yaml robot-agent run "把红色方块推到
 | `arena_bounds` | 目标点超出场地边界；相对位移超过场地对角线 | 拒绝 |
 | `geofence` | 目标点落入圆形禁区（充电桩、人员通道） | 拒绝 |
 | `speed_limit` | 线速度超硬件上限 | **自动降速**并记录修正 |
+| `step_distance` | 单次位移超过上限（默认场地对角线） | 拒绝并提示拆步 |
 | `approval` | 高风险技能（配置或 `risk="high"`） | 挂起等待人工确认 |
 
 「目标点」不是只读顶层 `x`/`y`：`patrol` 的 `waypoints` 是点序列，`move_relative` 的
@@ -391,11 +392,12 @@ ROBOT_AGENT_CONFIG=config/production.yaml robot-agent run "把红色方块推到
 
 1. **降速 ≠ 拦截**：风险可控时保留任务可用性，但修正会写进审计与报告，不是悄悄改。
 2. **审批后重新校验**：批准的计划在续跑时会**再跑一次策略链**——人工修改同样受约束，否则审批就成了绕过安全层的通道。
-3. **下发前最后一道关卡**：`StepExecutor` 在执行每一步之前调用 `gate.screen_step()` 做二次校验，且**用校验后的步骤下发**。计划级校验发生在审批之前，中间隔着一次人工接管；审批人有权改参数，所以下发硬件的那一刻必须再看一眼。校验完仍按原参数下发，等于校验白做——`test_pre_dispatch_uses_corrected_step` 守着这一点。
+3. **下发前最后一道关卡**：`StepExecutor` 在执行每一步之前先查位姿新鲜度，再调 `gate.screen_step()` 做二次校验，且**用校验后的步骤下发**。计划级校验发生在审批之前，中间隔着一次人工接管；审批人有权改参数，所以下发硬件的那一刻必须再看一眼。校验完仍按原参数下发，等于校验白做——`test_pre_dispatch_uses_corrected_step` 守着这一点。
 4. **超时先急停**：技能超时后立即发零速指令，再谈重试。Python 线程无法强杀，所以超时处理是「放弃等待 + 急停」，不是假设线程已死。
 5. **先限量再解析**：HTTP 层的请求体上限（默认 64 KiB）在解析 JSON 之前生效，且不信 `Content-Length`——chunked 传输没有这个头，头也可以撒谎。
 6. **急停不排队**：`POST /v1/robot/stop` / `robot-agent estop` 不绑任务、不进信号量，直接下发零速；执行器没有 `stop` 技能时返回 503 而不是假报成功。
-7. **参数校验前移到闸门**：原本只在 `Skill.execute` 里做，那时请求已经进入执行队列。前移后非法的计划根本不会变成任务记录，审计里留下的是「安全拒绝」而不是「执行异常」——前者说明防线拦住了，后者说明防线漏到了末端。
+7. **位姿过期就不动**：移动类技能下发前检查 `/odom` 的时间戳（`safety.pose_stale_s`，默认 2s）。订阅断了以后 ROS2 桥里的位姿会安静地停在最后一个值上，没有异常、没有告警，只有位置慢慢偏离。`stop` 与查询类技能不受此限——位姿过期时最该能执行的恰恰是停下来。
+8. **参数校验前移到闸门**：原本只在 `Skill.execute` 里做，那时请求已经进入执行队列。前移后非法的计划根本不会变成任务记录，审计里留下的是「安全拒绝」而不是「执行异常」——前者说明防线拦住了，后者说明防线漏到了末端。
 
 ---
 
@@ -503,19 +505,22 @@ robot-agent eval --min-block-recall 0.99  # 另一道门禁：拦截率不达标
 ```
 单阶段耗时
   阶段                 n       P50       P95      mean       max
-  planning         300     0.01ms     0.03ms     0.02ms     0.12ms
-  plan_cache       300     0.03ms     0.07ms     0.04ms     0.14ms
-  screen           300     0.01ms     0.02ms     0.02ms     0.11ms
-  end_to_end        30    10.52ms    12.02ms    10.29ms    16.89ms
+  planning         200     0.01ms     0.02ms     0.01ms     0.10ms
+  plan_cache       200     0.03ms     0.06ms     0.04ms     0.16ms
+  screen           200     0.01ms     0.01ms     0.01ms     0.06ms
+  end_to_end        20    11.75ms    12.55ms    11.05ms    17.32ms
 
 任务级并发（规划/闸门/落库重叠，物理动作仍由信号量串行）
-  16 个任务：串行 168ms → 并发 148ms（1.14×）
+  16 个任务：串行 168ms → 并发 155ms（1.08×）
 ```
 
-`end_to_end` 是完整链路（规划 → 闸门 → 执行 → 核验 → 报告 → 落库），10ms 说明
-「安全层不是瓶颈」：两道正则+七条策略加起来不到 0.05ms，时间几乎全在 SQLite 落库与审计写盘。
+数字会随机器负载浮动（`end_to_end` 在 10–12ms、并发比在 1.05–1.15× 之间），
+重点是量级与相对关系，不是小数点后两位。
 
-**并发只有 1.14×，这是诚实的数字**：单机器人假设下物理动作必须串行（信号量），
+`end_to_end` 是完整链路（规划 → 闸门 → 执行 → 核验 → 报告 → 落库），10ms 说明
+「安全层不是瓶颈」：两道正则 + 八条策略加起来不到 0.05ms，时间几乎全在 SQLite 落库与审计写盘。
+
+**并发只有 1.08×，这是诚实的数字**：单机器人假设下物理动作必须串行（信号量），
 SQLite 又是单写者，真正的并行度来自「规划/闸门与上一条指令的物理动作重叠」。
 要更高并发不是调参能解决的——得先有第二台机器人。
 
@@ -576,7 +581,7 @@ robot-agent run "把红色方块推到左边"
 ## 测试与质量门禁
 
 ```bash
-pytest                                              # 388 个用例
+pytest                                              # 407 个用例
 pytest --cov=robot_agent --cov-report=term-missing  # 覆盖率 81%
 ruff check src tests && ruff format --check src tests
 mypy src
@@ -640,6 +645,47 @@ watchdog 或换 Redlock。
 | [ros2_ws/README.md](ros2_ws/README.md) | 仿真环境搭建、方块坐标一致性约定 |
 | [SECURITY.md](SECURITY.md) | 信任边界、已知限制、加固清单 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 开发流程、如何新增技能/策略 |
+
+---
+
+## 与简历条目的对应
+
+这张表的用途是「被问到时能在 30 秒内指到代码」。右列都是可执行命令，不是形容词。
+
+| 简历里的说法 | 代码位置 | 怎么验证 |
+|---|---|---|
+| 大模型解析自然语言指令完成任务规划 | `planner/llm.py`（Function Calling，`tools` 模式；网关不支持时降级到 JSON prompt）+ `planner/pipeline.py` 三级路径 | `robot-agent plan "把红色方块推到左边"` |
+| 经意图识别路由 | `planner/router.py`：move / manipulate / query / system / unknown 五类 | `robot-agent plan "今天天气怎么样"` 看 `intent` |
+| 通过 Function Calling 调用 Skill | `llm.py` 把注册表导出成 OpenAI `tools`；`mode=tool_calls` | `robot-agent skills` |
+| 安全审核作为行为安全防线 | `safety/gate.py` + `safety/policies.py`（8 条策略链） | `robot-agent eval` |
+| 参数边界校验 | `skills/params.py`（pydantic）+ `param_schema` 策略 | 评测里 `param_schema` 触发 25 次 |
+| LangGraph Interrupt 挂起 + 人工接管 | `orchestration/graph.py`，`approval_mode=interrupt`（默认 `persist`，理由见模块头） | `robot-agent approvals` |
+| 全链路审计 | `audit.py`：哈希链 + 尾部恢复 | `robot-agent audit verify` |
+| 异常拦截率 99.2% | `evaluation/`：250 条用例、25 类 | `robot-agent eval` → 124/125 |
+| ROS2 状态回调 + 下发前二次安全校验 | `skills/ros2.py::RosBridge.pose_age_s`（`/odom` 时间戳）→ `factory.py::_pre_dispatch` → `gate.screen_step` | `pytest tests/unit/test_pre_dispatch.py` |
+| 结构化审核结论可解析、可回放 | `StrategySummary` + 审计 JSONL（逐步 `corrected` / `policy` / `reason`） | `robot-agent audit tail` |
+| 20+ 设备能力封装为标准化 Skill | 21 个技能，mock 与 ROS2 **同名同参** | `robot-agent skills` |
+| ROS2 Action 封装移动、点位导航 | `skills/ros2_action.py::NavActionClient`；无 Nav2 时 `goto` 回退 `/cmd_vel` 闭环 | `ROBOT_AGENT_EXECUTOR__USE_NAV_ACTION=true` |
+| Redis 分布式锁（SETNX + EX） | `orchestration/execution_lock.py`：`SET NX PX` + Lua 比对 token 释放 | `test_execution_lock.py` |
+| 仿真环境：模型导入、launch、tf、Action 联调 | `ros2_ws/`：`demo.launch.py`（TurtleBot3 官方模型 + `map→odom` 静态 tf）、`spawn_cubes.py` | `ros2 launch robot_agent_ros2 demo.launch.py` |
+| 高频意图命中缓存 2s → 200ms | `planner/cache.py`：TTL + LRU，key 含配置指纹，进出深拷贝 | `robot-agent plan` 第二次看 `source=cache` |
+
+### 三处口径要对齐的地方
+
+写在这里，是因为面试官会比你自己更早发现它们。
+
+1. **「路由至业务智能体」→ 实际是单个智能体 + 按意图收窄技能子集**。`router.py` 输出的是
+   `intent`，用来裁技能清单与提示词，不是一个多智能体编排器。简历这句话在本仓库里能被
+   支撑到「意图识别 → 缩小候选集」，撑不到「多个业务 Agent 各管一摊」。真要说多智能体，
+   得再加一层 dispatcher 与各自的 state——目前没有，也不假装有。
+2. **「无依赖环节并行化 3s→800ms」在本仓库复现不了**。仓库里能对上的是并发任务调度
+   （`_task_semaphore`）与物理动作串行（`_motion_semaphore`），没有把「检索 + Redis +
+   设备状态」三处 IO `gather` 起来——本仓库没有这三处 IO，那是实习期系统里的链路。
+   本地 `benchmarks/latency.py` 的端到端是 **10.5ms** 量级（mock、无网络），两个数字
+   不同口径，不能混着说。
+3. **20+「设备」→ 实际是 21 个机器人技能**（导航、抓放、外设、查询），不是多品类设备
+   （灯、空调、门禁那类）。数量和「统一 skill 名 + 参数 schema、新增零改动接入」这两点
+   成立，品类范围要按机器人说。
 
 ---
 

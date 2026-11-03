@@ -27,12 +27,13 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import statistics
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from robot_agent.config import ArenaSettings, SafetySettings, Settings
 from robot_agent.domain.plan import Plan
@@ -78,11 +79,9 @@ def bench_planning(rounds: int) -> dict[str, float]:
     for i in range(rounds):
         instruction = INSTRUCTIONS[i % len(INSTRUCTIONS)]
         started = time.perf_counter()
-        try:
+        # 无法解析的指令同样计入耗时：失败也要花时间，不能只统计成功路径
+        with contextlib.suppress(Exception):
             planner.plan(instruction)
-        except Exception:
-            # 无法解析的指令同样计入耗时：失败也要花时间，不能只统计成功路径
-            pass
         samples.append((time.perf_counter() - started) * 1000.0)
     return _summarize(samples)
 
@@ -96,11 +95,11 @@ def bench_gate(rounds: int) -> dict[str, float]:
 
     plans: list[tuple[Any, str]] = []
     for instruction in INSTRUCTIONS:
-        try:
+        # 解析不了的指令直接跳过：基准测的是「评估一条合法计划要多久」，
+        # 把异常路径混进去只是把两种耗时平均掉了
+        with contextlib.suppress(Exception):
             # RulePlanner.plan 返回 list[PlanStep]，闸门要的是 Plan 契约对象
             plans.append((Plan(steps=planner.plan(instruction), source="rules"), instruction))
-        except Exception:
-            continue
 
     samples: list[float] = []
     for i in range(rounds):
@@ -174,16 +173,20 @@ async def bench_concurrency(batch: int) -> dict[str, float]:
     with tempfile.TemporaryDirectory() as raw:
         assembly = await build_assembly(_bench_settings(Path(raw)), force_rules=True)
         try:
-            prepared = [await assembly.runner.submit(INSTRUCTIONS[i % len(INSTRUCTIONS)])
-                        for i in range(batch)]
+            prepared = [
+                await assembly.runner.submit(INSTRUCTIONS[i % len(INSTRUCTIONS)])
+                for i in range(batch)
+            ]
 
             started = time.perf_counter()
             for task in prepared:
                 await assembly.runner.execute(task.id)
             serial_ms = (time.perf_counter() - started) * 1000.0
 
-            prepared = [await assembly.runner.submit(INSTRUCTIONS[i % len(INSTRUCTIONS)])
-                        for i in range(batch)]
+            prepared = [
+                await assembly.runner.submit(INSTRUCTIONS[i % len(INSTRUCTIONS)])
+                for i in range(batch)
+            ]
             started = time.perf_counter()
             await asyncio.gather(*(assembly.runner.execute(t.id) for t in prepared))
             parallel_ms = (time.perf_counter() - started) * 1000.0

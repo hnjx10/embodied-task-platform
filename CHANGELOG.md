@@ -2,6 +2,50 @@
 
 格式遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循语义化版本。
 
+## [1.4.1] - 2026-11-03
+
+主题：**把「对接 ROS2 状态回调后、下发前二次校验」从两段各自正确的代码，接成一条真的链路。**
+
+起因是一次简历与代码的逐条比对。`pre_dispatch` 会调 `gate.screen_step()`，
+`RosBridge` 也订阅了 `/odom`，但两者互不相识：闸门只吃步骤参数与静态配置，
+不读实时位姿。也就是说「下发硬件动作前做二次安全校验」这句话，在代码里只成立了
+一半——校验的是**参数**，不是**机器人此刻在哪**。
+
+### Added
+
+- `RosBridge._odom_at` + `pose_age_s()`：`/odom` 回调里记 `monotonic()` 时间戳。
+  返回 `None` 表示从未收到，返回 `float` 表示距上次回调的秒数——两种状态的排查
+  方向完全不同（等节点起来 / 查 DDS 与话题），所以不合并成 `inf`。
+- `factory.MOTION_SKILLS` + `_pre_dispatch(pose_age=..., stale_s=...)`：移动类技能
+  下发前先查位姿新鲜度，`None` 或超阈值（`safety.pose_stale_s`，默认 2s）即拒，
+  指标记 `safety_blocked_total{policy="stale_pose"}`。
+- `SafetySettings.pose_stale_s`：阈值可配。现场 `/odom` 频率低（如 1Hz）时
+  2s 会频繁误拦，应调大；调小则更保守。
+
+### 设计取舍
+
+- **不进策略链**：策略是「针对这一步参数做判断」的纯函数，位姿是运行时状态。
+  塞进策略链会让 8 条策略各多一个可变输入，且把「订阅是否健康」和「指令是否合规」
+  两类问题混在同一个失败原因里。
+- **必须在闸门之前**：位姿过期时报「参数越界」会把排查方向带偏。
+- **急停不受此限**：`stop` 与查询类技能不在 `MOTION_SKILLS` 里。位姿过期时最该能
+  执行的恰恰是停下来——把急停也套上这条规则，等于安全规则自己制造危险。
+
+### Changed
+
+- `ros2_ws` 的 `demo.launch.py` 补 `map → odom` 静态变换（`tf2_ros`）。Gazebo 的
+  `empty_world` 只发 `odom → base_footprint`，tf 树缺 `map` 层，RViz 与 nav 工具链
+  会直接报错。没有 SLAM，所以只能是单位阵；接 AMCL 时换成定位系统的动态变换。
+- README 新增「与简历条目的对应」一节：15 条逐条给出代码位置与验证命令，
+  并把 3 处口径差异写在明处（意图路由到「业务智能体」、3s→800ms、20+「设备」）。
+- 策略表补 `step_distance` 行（此前漏在表外，实际 8 条策略）。
+
+### Fixed
+
+- `benchmarks/latency.py` 的 13 条 lint 报错（`typing.Callable` 未用、`try/except/pass`
+  改 `contextlib.suppress`）；`CONTRIBUTING.md` 代码块的缩进被 ruff format 判为不合规。
+- 测试 388 → 407（新增 `tests/unit/test_pre_dispatch.py`，19 例）。
+
 ## [1.4.0] - 2026-11-03
 
 主题：**项目更名为「具身任务规划与执行验证平台」，并补齐两条此前只在文档里存在的能力。**

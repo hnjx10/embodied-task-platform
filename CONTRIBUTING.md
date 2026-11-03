@@ -37,11 +37,12 @@ refactor(orchestration)!: 重构任务状态机     # ! 表示破坏性变更
 class GripParams(SkillParams):
     object_id: str = Field(description="物体 ID")
 
+
 class MockGripSkill(Skill):
     name = "grip"
     description = "抓取指定物体"
     params_model = GripParams
-    risk = "high"           # 高风险 → 触发人工审批
+    risk = "high"  # 高风险 → 触发人工审批
     is_motion = True
 
     def run(self, object_id: str) -> SkillResult:

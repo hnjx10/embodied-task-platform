@@ -24,7 +24,7 @@ sudo systemctl status robot-agent
 ### 容器
 
 ```bash
-docker build -t robot-agent:1.4.0 .
+docker build -t robot-agent:1.4.1 .
 docker compose up -d
 docker compose logs -f --tail=100
 ```
@@ -104,6 +104,9 @@ robot-agent audit tail -n 20 | grep blocked
 - `policy=geofence` → 目标落在禁区，确认 `safety.geofences` 是否符合现场
 - `policy=skill_allowlist` → LLM 幻觉出未注册技能，看 `plan.warnings`
 - `policy=blocked_keyword` → 指令含红线词
+- `policy=stale_pose` → `/odom` 断了或没起来，位姿过期（默认 2s）。**先查话题，别调阈值**：
+  `ros2 topic hz /odom` 掉到 0 就是驱动或 DDS 的问题；`ROS_DOMAIN_ID` 不一致时
+  话题存在但收不到数据，这是最常见的现场原因
 
 **不要为了「让任务跑通」而放宽策略**。先确认是配置错了还是指令错了。
 
@@ -284,13 +287,13 @@ robot-agent tasks purge          # 等价于直接调用 runner.purge()
 ```bash
 # 升级
 systemctl stop robot-agent
-/opt/robot-agent/venv/bin/pip install --upgrade "robot-agent[api]==1.4.0"
+/opt/robot-agent/venv/bin/pip install --upgrade "robot-agent[api]==1.4.1"
 systemctl start robot-agent
 robot-agent doctor && curl -fsS localhost:8080/readyz | jq .status
 
 # 回滚
 systemctl stop robot-agent
-/opt/robot-agent/venv/bin/pip install --force-reinstall "robot-agent[api]==1.4.0"
+/opt/robot-agent/venv/bin/pip install --force-reinstall "robot-agent[api]==1.4.1"
 systemctl start robot-agent
 ```
 

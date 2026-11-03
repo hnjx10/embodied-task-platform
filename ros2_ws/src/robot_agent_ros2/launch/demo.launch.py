@@ -37,4 +37,18 @@ def generate_launch_description() -> LaunchDescription:
         output="screen",
     )
 
-    return LaunchDescription([world, TimerAction(period=5.0, actions=[spawn])])
+    # gazebo 的 empty_world 只发 odom → base_footprint（diff_drive 插件给的），
+    # 没有 map 这一层。补一个 map → odom 的静态单位变换，目的有两个：
+    # 1) tf 树从 map 到 base_link 连续，RViz 与 nav 工具链不会因为「找不到 map」
+    #    直接报错；2) 规划侧用的是 odom 相对坐标，map 只是显示与对齐用的参考系，
+    #    这里没有 SLAM，所以只能是单位阵——写死比留空好，留空是「不知道自己不知道」。
+    # 真机上接 AMCL/SLAM 时，这个节点要换成定位系统发布的 map → odom 动态变换。
+    tf_map_odom = Node(
+        package="tf2_ros",
+        executable="static_transform_publisher",
+        name="tf_map_to_odom",
+        arguments=["--frame-id", "map", "--child-frame-id", "odom"],
+        output="screen",
+    )
+
+    return LaunchDescription([world, TimerAction(period=5.0, actions=[spawn]), tf_map_odom])

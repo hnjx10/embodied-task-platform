@@ -125,6 +125,18 @@ class Policy(Protocol):
 拒绝时该步 `outcome="blocked"`、`attempts=0`（一次都没下发），与「执行失败」区分开：
 前者是闸门挡住的，后者是硬件没做到。
 
+这一钩子里还有一道**不是策略、但必须在前面的检查**：位姿新鲜度。
+`RosBridge` 在 `/odom` 回调里记下 `monotonic()` 时间戳，`pose_age_s()` 返回距上次
+回调的间隔；`_pre_dispatch` 对移动类技能（`factory.MOTION_SKILLS`）先看这个值，
+`None` 或超过 `safety.pose_stale_s`（默认 2s）就拒。
+
+为什么它不该写进策略链：策略是「针对这一步的参数做判断」的纯函数，位姿是运行时状态，
+混进去会让每条策略都多一个可变输入。为什么它必须在闸门之前：位姿过期时报「参数越界」
+会把排查方向带到沟里——真正的问题是订阅断了。
+
+`stop` 与查询类技能**不受此限**。这是刻意的：位姿过期时最该能执行的恰恰是停下来，
+把急停也套上这条规则，等于安全规则自己制造危险。
+
 ### TaskRepository（存储）
 
 `Protocol` + 两个实现（内存 / SQLite）。`transition(expected, new)` 是 CAS 语义，

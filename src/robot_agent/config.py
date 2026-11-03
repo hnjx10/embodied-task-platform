@@ -99,6 +99,11 @@ class SafetySettings(BaseModel):
     require_approval_for: list[str] = Field(default_factory=list)
     # 是否允许把「超速请求」自动降速后执行，而不是直接拒绝
     clamp_overspeed: bool = True
+    #: 位姿数据允许的最大陈旧时间（秒）。移动类动作下发前会检查 /odom 的更新时间：
+    #: 超过这个值说明状态回调断了或 DDS 丢包，此时下发移动等于闭着眼睛开——
+    #: 宁可拒绝，也不要用一条过期位姿去执行「再往前 3 米」。
+    #: 注意：急停 ``stop`` 不受此限制，任何时候都必须能下发。
+    pose_stale_s: float = Field(default=2.0, gt=0.0)
 
     @model_validator(mode="after")
     def _check_speed_ordering(self) -> SafetySettings:

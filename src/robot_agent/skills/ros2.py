@@ -114,6 +114,9 @@ class RosBridge:
         self.gripper_pub = self.node.create_publisher(Float64, "/gripper/position", 10)
         self.led_pub = self.node.create_publisher(ColorRGBA, "/led/color", 10)
         self._odom: tuple[float, float, float] | None = None
+        #: 最近一次 /odom 回调的时刻（monotonic）。安全层用它判断位姿是否过期——
+        #: 订阅读着却没有时间戳，等于「有数据但不知道是不是三分钟前的」。
+        self._odom_at: float | None = None
         self._models: dict[str, tuple[float, float]] = {}
         self._battery_pct: float | None = None
         self._frame: tuple[int, int, str, bytes] | None = None
@@ -144,6 +147,18 @@ class RosBridge:
         q = msg.pose.pose.orientation
         with self._lock:
             self._odom = (p.x, p.y, _yaw_from_quat(q.x, q.y, q.z, q.w))
+            self._odom_at = time.monotonic()
+
+    def pose_age_s(self) -> float | None:
+        """距最近一次 /odom 回调过去了多少秒。从未收到过则返回 None。
+
+        返回 None 而不是 ``inf``：调用方需要区分「还没开始收」和「收了但很旧」，
+        这两种情况在排查时的下一步动作完全不同（等节点起来 / 查 DDS 与话题）。
+        """
+        with self._lock:
+            if self._odom_at is None:
+                return None
+            return max(0.0, time.monotonic() - self._odom_at)
 
     def _models_cb(self, msg: Any) -> None:
         poses = {
@@ -460,6 +475,8 @@ class RosBridge:
         self.reset_odom_client.call_async(Empty.Request())
         with self._lock:
             self._odom = (0.0, 0.0, 0.0)
+            # 归零也是一次「位姿刚更新」，否则紧接着的移动动作会被判成位姿过期
+            self._odom_at = time.monotonic()
         return SkillResult(ok=True, detail="里程计已归零，当前位置定义为原点")
 
     def shutdown(self) -> None:

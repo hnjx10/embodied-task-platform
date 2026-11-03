@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "embodied-task-platform"
-version = "1.4.0"
+version = "1.4.1"
 description = "具身任务规划与执行验证平台：LLM task planning + standardized skills + policy-based safety gate for ROS2 / Gazebo robots, with hash-chained audit and an HTTP control plane."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -88,6 +88,8 @@ ignore = [
 "src/robot_agent/skills/ros2.py" = ["N999"]
 # ROS2 辅助脚本面向终端用户，用 print 输出人类可读提示（依赖未装上时连 rclpy 日志都没有）
 "ros2_ws/**" = ["T201"]
+# 基准脚本本身就是终端工具：它唯一的输出方式就是 print
+"benchmarks/**" = ["T201"]
 
 [tool.mypy]
 python_version = "3.10"

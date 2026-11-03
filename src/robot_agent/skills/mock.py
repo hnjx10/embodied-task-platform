@@ -291,6 +291,15 @@ class MockWorld:
                 )
             return self.cubes.get(target)
 
+    def pose_age_s(self) -> float:
+        """mock 世界的位姿永远是最新的：没有订阅、没有 DDS，也就不存在丢包。
+
+        返回 0.0 而不是 ``None`` 是有意的——``None`` 表示「从未收到位姿」，
+        在 mock 下如果返回 None，每次移动下发前都会被安全层拒掉，
+        整个演示环境就跑不起来了。这个接口存在的意义是让 ROS2 侧有东西可填。
+        """
+        return 0.0
+
     def set_speed_cap(self, value: float) -> None:
         with self._lock:
             self.speed_cap = value
