@@ -10,7 +10,7 @@
  L3  领域服务      planner/ │ safety/               ← 把能力编排成决策
  L2  能力层        skills/ │ storage/                ← 真正干活：驱动执行器、落库
  L1  领域模型      domain/ │ reporting.py            ← 纯数据契约 + 纯函数渲染
- L0  基础设施      config │ logging │ metrics │ audit │ errors │ version
+ L0  基础设施      config │ logging │ metrics │ audit │ errors │ version │ brand
 ```
 
 **依赖只向下**。同层之间不互相 import：`planner` 不认识 `safety`，`skills` 不认识
@@ -54,10 +54,12 @@
 1. submit()      创建 TaskRecord（queued），幂等键去重，写审计 task_submitted
 2. execute()     CAS queued → running，抢占成功者才继续
 3. graph.invoke()（在线程池里跑，不阻塞事件循环）
-   ├─ plan     Planner: LLM →(失败/超时/熔断) 规则兜底
+   ├─ plan     Planner: 规划缓存 →(未命中) LLM →(失败/超时/熔断) 规则兜底
    ├─ screen   SafetyGate: 逐步过策略链，任一拒绝 → 整条不执行
    │           └─ 需要审批 → 状态置 awaiting_approval，图直接结束
    ├─ execute  StepExecutor: 单步超时/重试，失败即停
+   │           ├─ 每步下发前 pre_dispatch 再调一次 gate.screen_step()
+   │           │  （用修正后的步骤下发：限速策略把 0.9 改成 0.22，不能用原参数发）
    │           └─ 每步通过回调推事件到 EventBus
    ├─ verify   用 get_pose 实测位姿，不信执行器的自述
    └─ report   生成人类可读报告
@@ -101,8 +103,27 @@ class Policy(Protocol):
 
 ### Planner（规划）
 
-`Planner` 是门面，内部持有 `LLMPlanner`（可为 None）与 `RulePlanner`。
+`Planner` 是门面，内部持有 `LLMPlanner`（可为 None）、`PlanCache` 与 `RulePlanner`。
 降级是显式的：降级时 `Plan.warnings` 留痕，指标 `planning_total{source="rules"}` 可统计。
+
+三级路径的顺序是 **缓存 → LLM → 规则**，不是「LLM 优先、缓存兜底」：
+
+- 缓存放在最前，是因为它命中的是最贵的环节（模型往返是秒级，规则规划是微秒级）
+- 缓存的 key 必须带**配置指纹**（技能名集合 + 场地半边长 + 默认速度）。少了它，
+  改完配置重启会拿到按旧场地边界规划的计划——不报错，只是走进禁区
+- 进出都深拷贝：闸门会就地改写步骤参数（降速），缓存里存的必须是原始计划
+
+### 二次校验（pre_dispatch）
+
+`SafetyGate.screen_step()` 除了在 `screen` 阶段整条过一次，还在**每步下发硬件前**
+再被调用一次（`StepExecutor.pre_dispatch` 钩子）。两次不是冗余：
+
+- `screen` 阶段看的是「整条计划是否合规」
+- 下发前看的是「此刻这一步是否仍可执行」——上一次位姿查询的结果、缓存命中的旧计划、
+  审批挂起期间被改过的参数，都只有在这一刻才是确定的
+
+拒绝时该步 `outcome="blocked"`、`attempts=0`（一次都没下发），与「执行失败」区分开：
+前者是闸门挡住的，后者是硬件没做到。
 
 ### TaskRepository（存储）
 
@@ -178,3 +199,22 @@ HTTP 请求 ──► TaskRunner
 | SQLite 锁冲突 | `busy_timeout=5000` + 写锁串行 | 短暂延迟 |
 | 审计写失败 | 默认不阻塞（可配 fail_closed） | 服务继续，指标 +1，日志 error |
 | 客户端断连（SSE） | 检测 `is_disconnected` 并退订 | 无泄漏 |
+
+---
+
+## 产品标识与部署标识
+
+产品名（给人看）与包名 / CLI 名（给机器看）分开维护，唯一事实源是 `brand.py`：
+
+| 常量 | 值 | 用在哪 |
+|---|---|---|
+| `PRODUCT_NAME_ZH` | 具身任务规划与执行验证平台 | README 标题、OpenAPI `info.title`、`/version.product`、报告抬头 |
+| `PRODUCT_NAME_EN` | Embodied Task Planning & Execution Verification Platform | 英文材料 |
+| `TECH_NAME` | robot-agent | 包名 `robot_agent`、CLI 命令、systemd unit、Dockerfile ENTRYPOINT、k8s 标签 |
+
+`brand.py` 在 L0，无任何依赖，被 `api/`、`cli.py`、`__init__.py` 引用。
+改名时只动前两个常量，部署脚本一行都不用改——「名字」会随简历、汇报、产品定位变，
+「标识」一变就要连着改 CI、systemd 与运维手册，这两件事不该绑在一起。
+
+`test_layering.py` 的 `LAYER_RANK` 里 `robot_agent.brand` 登记为 0，
+不是随手加一行：不加就会在导入时被判定为「未登记层」，新包绕过分层的路走不通。

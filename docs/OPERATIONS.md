@@ -72,6 +72,7 @@ robot-agent doctor
 | `robot_agent_steps_total{outcome="rejected"}` | 技能返回失败 | 突增说明场景/硬件异常 |
 | `robot_agent_task_duration_seconds_p99` | 任务耗时 | > 120s 说明导航卡住 |
 | `robot_agent_llm_requests_total{outcome!="ok"}` | LLM 异常 | 连续失败 → 熔断打开，已自动降级到规则 |
+| `robot_agent_plan_cache_total{result="miss"}` | 规划缓存未命中 | 命中率长期为 0 → 缓存被关掉或指令从不重复，不是故障；miss 突增且 LLM 同时在报错 → 看熔断 |
 | `robot_agent_audit_write_errors_total` | 审计写入失败 | **> 0 立即告警**（合规风险） |
 | `robot_agent_tasks_in_flight` | 在飞任务 | 持续 > 0 但无新完成 → 卡死 |
 | `robot_agent_event_subscriber_rejected_total` | SSE 订阅被拒次数 | 突增 → 客户端在狂开连接，按 `max_sse_subscribers` 治理 |
@@ -105,6 +106,22 @@ robot-agent audit tail -n 20 | grep blocked
 - `policy=blocked_keyword` → 指令含红线词
 
 **不要为了「让任务跑通」而放宽策略**。先确认是配置错了还是指令错了。
+
+有一种 `blocked` 要单独认：步骤的 `detail` 写着「下发前二次校验拒绝」。
+它不是 `screen` 阶段拦的（整条计划当时是通过的），而是**执行到那一步、下发硬件之前**
+被 `pre_dispatch` 又过了一遍闸门。区别看 `attempts`：
+
+| `attempts` | 含义 |
+|---|---|
+| `0` | 一次都没下发，闸门挡住的 |
+| `>0` | 已经下发了，硬件没做到（那是 `failed` 不是 `blocked`） |
+
+```bash
+grep step_blocked_before_dispatch /var/log/robot-agent/service.log | tail
+```
+
+常见原因：上一次位姿查询的结果让这一步越界了、审批挂起期间有人改了参数。
+这类拦截**不要重试**——重试会拿着同样的位置再撞一次。
 
 ### 任务 `failed` 且 `error.code=planning_error`
 
@@ -167,6 +184,32 @@ robot-agent audit tail | grep -c planning_fallback  # 降级次数
 ```
 
 冷却 60s 后自动半开试探。若持续失败，检查网关配额与 `base_url`。
+
+### 改完配置，规划结果没变
+
+先看是不是缓存：同一句指令在 TTL（默认 300s）内会直接复用上一次的计划，
+日志里能看到 `plan_cache_hit`。
+
+```bash
+# 每条命中都会打一条 plan_cache_hit
+grep -c '"event": "plan_cache_hit"' /var/log/robot-agent/service.log
+
+# 单次绕过缓存做对比（--mock 用 mock 执行器，不碰硬件）
+ROBOT_AGENT_PLAN_CACHE__ENABLED=false robot-agent run "把红色方块推到左边" --mock
+```
+
+缓存 key 里带**配置指纹**（技能名集合 / 场地半边长 / 默认速度），所以改这三类会自动
+miss；改其它配置（例如 `safety` 的限速值、审计路径）不会让缓存失效。
+
+这不是漏洞，是分工：**规划可以旧，校验不行**。安全策略在每次下发前都会重新过一遍
+（见上面的 `pre_dispatch`），旧计划绕不过新策略——最多是参数被现场修正。
+
+需要立刻清空：
+
+```bash
+ROBOT_AGENT_PLAN_CACHE__ENABLED=false robot-agent run "..." --mock   # 单次绕过
+systemctl restart robot-agent                                      # 缓存不落盘，重启即清空
+```
 
 ---
 
