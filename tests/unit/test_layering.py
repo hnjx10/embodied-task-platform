@@ -28,6 +28,7 @@ LAYER_RANK: dict[str, int] = {
     # L0 基础设施：谁都可以用，它们之间只允许 errors/version 这类无依赖模块
     "robot_agent.errors": 0,
     "robot_agent.version": 0,
+    "robot_agent.brand": 0,
     "robot_agent.logging": 0,
     "robot_agent.config": 0,
     "robot_agent.metrics": 0,

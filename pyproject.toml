@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "robot-agent"
-version = "1.3.1"
-description = "LLM-driven task orchestration for ROS2 / Gazebo robots, with a policy-based safety gate, hash-chained audit trail and an HTTP control plane."
+name = "embodied-task-platform"
+version = "1.4.0"
+description = "具身任务规划与执行验证平台：LLM task planning + standardized skills + policy-based safety gate for ROS2 / Gazebo robots, with hash-chained audit and an HTTP control plane."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

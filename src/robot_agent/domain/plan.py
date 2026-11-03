@@ -51,6 +51,9 @@ class Plan(BaseModel):
     model: str | None = None
     latency_ms: float = 0.0
     warnings: list[str] = Field(default_factory=list)
+    #: 是否来自规划缓存。``source`` 仍记录计划的原始来源（llm / rules），
+    #: 这样才能回答「缓存里存的是模型计划还是兜底计划」。
+    cached: bool = False
     # 原始模型输出，仅用于排障；默认不落审计（体积大且可能含用户指令）
     raw: str | None = Field(default=None, repr=False)
 

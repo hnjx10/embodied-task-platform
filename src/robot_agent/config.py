@@ -157,6 +157,19 @@ class LLMSettings(BaseModel):
         return bool(self.enabled and self.api_key is not None)
 
 
+class PlannerCacheSettings(BaseModel):
+    """规划结果缓存。
+
+    同一句指令的重复请求不需要再走一次模型：命中即返回上一次的计划。
+    ``max_entries=0`` 或 ``ttl_s=0`` 都会关闭缓存（评测与单测默认关，
+    否则「跑两遍结果不同」这类 bug 会被缓存掩盖）。
+    """
+
+    enabled: bool = True
+    max_entries: int = Field(default=512, ge=0, le=65536, description="LRU 上限，0 表示关闭")
+    ttl_s: float = Field(default=300.0, ge=0.0, description="条目存活时间，0 表示关闭")
+
+
 class ExecutorSettings(BaseModel):
     """执行器选择与容错参数。"""
 
@@ -334,6 +347,7 @@ class Settings(BaseSettings):
     storage: StorageSettings = Field(default_factory=StorageSettings)
     api: APISettings = Field(default_factory=APISettings)
     lock: LockSettings = Field(default_factory=LockSettings)
+    plan_cache: PlannerCacheSettings = Field(default_factory=PlannerCacheSettings)
 
     # 由 load_settings 注入，供 YAML 源读取
     _config_path: Path | None = None

@@ -8,6 +8,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from robot_agent.api.app import create_app
+from robot_agent.brand import PRODUCT_NAME_ZH, TECH_NAME
 from robot_agent.config import Settings
 
 pytestmark = pytest.mark.integration
@@ -237,7 +238,15 @@ async def test_metrics_endpoint(client: AsyncClient) -> None:
 async def test_openapi_schema(client: AsyncClient) -> None:
     spec = (await client.get("/openapi.json")).json()
     assert "/v1/tasks" in spec["paths"]
-    assert spec["info"]["title"] == "robot-agent"
+    # 文档标题必须是简历上的项目名：面试官打开 /docs 看到的第一行就是它
+    assert spec["info"]["title"] == PRODUCT_NAME_ZH
+
+
+async def test_version_reports_product_and_tech_name(client: AsyncClient) -> None:
+    """产品名给人看，技术名给部署脚本匹配——两个都要在，且不能混。"""
+    body = (await client.get("/version")).json()
+    assert body["product"] == PRODUCT_NAME_ZH
+    assert body["name"] == TECH_NAME
 
 
 async def test_sse_stream_closes_on_terminal(client: AsyncClient) -> None:

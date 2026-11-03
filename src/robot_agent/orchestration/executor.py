@@ -28,6 +28,10 @@ from robot_agent.skills.base import SkillRegistry
 logger = get_logger(__name__)
 
 StepCallback = Callable[[StepOutcome], None]
+#: 下发前二次校验：接收待执行步骤，返回（可能被修正的步骤, 拒绝原因或 None）。
+#: 返回修正后的步骤是必要的——限速策略会把 0.22 m/s 以上的线速度改小，
+#: 校验完却按原参数下发，等于校验白做。
+PreDispatchCheck = Callable[[PlanStep], tuple[PlanStep, "str | None"]]
 EMERGENCY_STOP_SKILL = "stop"
 
 
@@ -40,10 +44,14 @@ class StepExecutor:
         settings: ExecutorSettings,
         *,
         on_step: StepCallback | None = None,
+        pre_dispatch: PreDispatchCheck | None = None,
     ) -> None:
         self.registry = registry
         self.settings = settings
         self.on_step = on_step
+        # 闸门在计划级校验过一次，这里在下发前再校验一次：
+        # 计划可能在审批环节被人为修改，人工改过的步骤同样必须过策略链。
+        self.pre_dispatch = pre_dispatch
         # 按 task_id 隔离回调：并发任务不能共用同一个进度回调，否则事件会串台
         self._callbacks: dict[str, StepCallback] = {}
         self._pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="skill-exec")
@@ -62,6 +70,25 @@ class StepExecutor:
     # ------------------------------------------------------------------ 单步
 
     def execute_step(self, index: int, step: PlanStep, task_id: str = "") -> StepOutcome:
+        if self.pre_dispatch is not None:
+            step, denial = self.pre_dispatch(step)
+            if denial:
+                logger.warning(
+                    "step_blocked_before_dispatch",
+                    task_id=task_id,
+                    index=index,
+                    skill=step.skill,
+                    reason=denial,
+                )
+                return StepOutcome(
+                    index=index,
+                    skill=step.skill,
+                    outcome="blocked",
+                    detail=f"下发前二次校验拒绝: {denial}",
+                    latency_ms=0.0,
+                    attempts=0,
+                )
+
         skill = self.registry.get(step.skill)
         attempts = 0
         last_error: str = ""

@@ -17,6 +17,7 @@ from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
 from robot_agent.api.deps import SettingsDep
+from robot_agent.brand import PRODUCT_NAME_ZH, TECH_NAME
 from robot_agent.version import __version__
 
 router = APIRouter(tags=["health"])
@@ -78,4 +79,5 @@ async def readyz(request: Request, settings: SettingsDep) -> JSONResponse:
 
 @router.get("/version", summary="版本信息")
 async def version() -> dict[str, str]:
-    return {"name": "robot-agent", "version": __version__}
+    """``name`` 是技术标识（部署脚本按它匹配），``product`` 是给人看的项目名。"""
+    return {"name": TECH_NAME, "product": PRODUCT_NAME_ZH, "version": __version__}

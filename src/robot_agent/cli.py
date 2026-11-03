@@ -22,6 +22,7 @@ import typer
 
 from robot_agent import console, metrics
 from robot_agent.audit import tail_entries
+from robot_agent.brand import PRODUCT_NAME_ZH, TECH_NAME
 from robot_agent.config import Settings, load_settings
 from robot_agent.domain.state import utcnow
 from robot_agent.errors import ExecutorUnavailableError, RobotAgentError
@@ -30,8 +31,8 @@ from robot_agent.storage.session import open_repository
 from robot_agent.version import __version__
 
 app = typer.Typer(
-    name="robot-agent",
-    help="LLM 驱动的机器人任务编排服务：规划 → 安全校验 → 执行 → 核验 → 报告",
+    name=TECH_NAME,
+    help=f"{PRODUCT_NAME_ZH}：规划 → 安全校验 → 执行 → 核验 → 报告",
     no_args_is_help=True,
     add_completion=False,
 )

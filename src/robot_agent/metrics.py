@@ -93,6 +93,9 @@ SAFETY_CLAMPED_TOTAL = Counter(
     f"{_PREFIX}_safety_clamped_total", "被自动降速修正的步数", ["policy"]
 )
 PLANNING_TOTAL = Counter(f"{_PREFIX}_planning_total", "规划尝试次数", ["source", "outcome"])
+#: 规划缓存命中情况。命中率高说明指令重复度高（可以据此调 TTL），
+#: 一直是 0 说明缓存没生效——这类「配了但没打开」的问题只能靠指标发现。
+PLAN_CACHE_TOTAL = Counter(f"{_PREFIX}_plan_cache_total", "规划缓存命中情况", ["result"])
 PLANNING_DURATION = Histogram(
     f"{_PREFIX}_planning_duration_seconds",
     "规划耗时",
@@ -137,6 +140,7 @@ def reset_for_tests() -> None:
         SAFETY_BLOCKED_TOTAL,
         SAFETY_CLAMPED_TOTAL,
         PLANNING_TOTAL,
+        PLAN_CACHE_TOTAL,
         PLANNING_DURATION,
         LLM_REQUESTS_TOTAL,
         LLM_TOKENS_TOTAL,

@@ -14,11 +14,12 @@ from typing import Any
 
 from robot_agent.audit import AuditLog, NullAuditLog
 from robot_agent.config import Settings
+from robot_agent.domain.plan import PlanStep
 from robot_agent.errors import ExecutorUnavailableError
 from robot_agent.logging import get_logger
 from robot_agent.orchestration.events import EventBus
 from robot_agent.orchestration.execution_lock import build_lock
-from robot_agent.orchestration.executor import StepExecutor
+from robot_agent.orchestration.executor import PreDispatchCheck, StepExecutor
 from robot_agent.orchestration.graph import AgentComponents, build_graph, build_resume_graph
 from robot_agent.orchestration.maintenance import PurgeScheduler
 from robot_agent.orchestration.runner import TaskRunner
@@ -29,6 +30,21 @@ from robot_agent.storage.base import TaskRepository
 from robot_agent.storage.sqlite import SqliteTaskRepository, build_repository
 
 logger = get_logger(__name__)
+
+
+def _pre_dispatch(gate: SafetyGate) -> PreDispatchCheck:
+    """把闸门的单步校验包成执行器要的形状。
+
+    计划级校验发生在「计划生成之后、执行之前」，中间还夹着一次人工审批。
+    审批人有权改步骤参数，所以真正下发硬件前的这一刻必须再过一遍策略链——
+    否则「人工批准」就成了一条绕开安全层的通道。
+    """
+
+    def check(step: PlanStep) -> tuple[PlanStep, str | None]:
+        corrected, summary = gate.screen_step(step)
+        return corrected, (None if summary.allowed else summary.reason)
+
+    return check
 
 
 @dataclass
@@ -99,7 +115,7 @@ async def build_assembly(settings: Settings, *, force_rules: bool = False) -> As
 
     planner = Planner(settings, registry, force_rules=force_rules)
     gate = SafetyGate(settings.safety, settings.arena, registry)
-    executor = StepExecutor(registry, settings.executor)
+    executor = StepExecutor(registry, settings.executor, pre_dispatch=_pre_dispatch(gate))
 
     components = AgentComponents(
         settings=settings,

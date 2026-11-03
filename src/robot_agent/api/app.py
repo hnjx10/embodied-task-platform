@@ -26,6 +26,7 @@ from fastapi.responses import JSONResponse
 
 from robot_agent.api.routes import health, robot, tasks
 from robot_agent.api.routes import metrics as metrics_routes
+from robot_agent.brand import PRODUCT_NAME_ZH, PRODUCT_TAGLINE
 from robot_agent.config import Settings, load_settings
 from robot_agent.errors import RobotAgentError
 from robot_agent.logging import (
@@ -231,9 +232,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             await assembly.aclose()
 
     app = FastAPI(
-        title="robot-agent",
+        title=PRODUCT_NAME_ZH,
         version=__version__,
-        summary="LLM 驱动的机器人任务编排服务",
+        summary=PRODUCT_TAGLINE,
         description=(
             "把自然语言指令编译为受约束的技能序列：规划 → 安全闸门 → 执行 → 核验 → 报告。\n\n"
             "所有任务可审计（哈希链）、可观测（Prometheus）、可人工接管（审批）。"

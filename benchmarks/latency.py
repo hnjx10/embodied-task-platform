@@ -38,6 +38,7 @@ from robot_agent.config import ArenaSettings, SafetySettings, Settings
 from robot_agent.domain.plan import Plan
 from robot_agent.factory import build_assembly
 from robot_agent.logging import configure_logging
+from robot_agent.planner.pipeline import Planner
 from robot_agent.planner.rules import RulePlanner
 from robot_agent.safety.gate import SafetyGate
 from robot_agent.skills.mock import build_mock_registry
@@ -106,6 +107,31 @@ def bench_gate(rounds: int) -> dict[str, float]:
         plan, instruction = plans[i % len(plans)]
         started = time.perf_counter()
         gate.screen(plan, instruction=instruction, task_id="bench")
+        samples.append((time.perf_counter() - started) * 1000.0)
+    return _summarize(samples)
+
+
+def bench_plan_cache(rounds: int) -> dict[str, float]:
+    """命中规划缓存的耗时——高频指令走的就是这条路径。
+
+    只量「命中」这一段：未命中时的时间取决于网关，本机量不出别人的模型。
+    命中路径的成本应该稳定在微秒级，一旦它开始随指令长度变化，说明缓存
+    退化成了「每次都重新校验」。
+    """
+    settings = Settings(
+        env="test",
+        storage={"url": "memory"},
+        plan_cache={"enabled": True, "max_entries": 256, "ttl_s": 300.0},
+    )
+    registry, _ = build_mock_registry(settings.arena)
+    planner = Planner(settings, registry, force_rules=True)
+    warm = INSTRUCTIONS[0]
+    planner.plan(warm)  # 预热，保证后续都命中
+
+    samples: list[float] = []
+    for _ in range(rounds):
+        started = time.perf_counter()
+        planner.plan(warm)
         samples.append((time.perf_counter() - started) * 1000.0)
     return _summarize(samples)
 
@@ -185,6 +211,7 @@ def _print_table(title: str, rows: dict[str, dict[str, Any]]) -> None:
 async def main_async(rounds: int, batch: int) -> dict[str, Any]:
     result: dict[str, Any] = {
         "planning": bench_planning(rounds),
+        "plan_cache": bench_plan_cache(rounds),
         "screen": bench_gate(rounds),
         "end_to_end": await bench_end_to_end(max(20, rounds // 10)),
         "concurrency": await bench_concurrency(batch),
@@ -208,8 +235,9 @@ def main() -> None:
 
     _print_table(
         "单阶段耗时（mock 执行器 / 规则规划器，不含网络与模型调用）",
-        {k: result[k] for k in ("planning", "screen", "end_to_end")},
+        {k: result[k] for k in ("planning", "plan_cache", "screen", "end_to_end")},
     )
+    print("  planning = 未命中（真算）    plan_cache = 命中缓存（查表）")
     concurrency = result["concurrency"]
     print("\n任务级并发（规划/闸门/落库重叠，物理动作仍由信号量串行）")
     print(
